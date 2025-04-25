@@ -1,5 +1,71 @@
 #zotero-map {
+  height: 60vh;
+  min-height: 300px;
   width: 100%;
-  height: 600px;
-  border: 1px solid #ccc;
+  max-width: 100%;
+  background-color: #ffffff;
+  box-sizing: border-box;
+  position: relative;
+  overflow: hidden;
+  z-index: 1; /* Ensure proper stacking context */
+  touch-action: manipulation; /* Improves touch handling on mobile */
+  -webkit-tap-highlight-color: transparent; /* Removes tap highlight on iOS */
+}
+
+/* Make sure the Leaflet container is properly sized */
+.leaflet-container {
+  height: 100%;
+  width: 100%;
+  /* Better touch handling */
+  touch-action: pan-x pan-y;
+}
+
+/* Fix Safari-specific issues */
+@supports (-webkit-touch-callout: none) {
+  #zotero-map {
+    /* Fix for iOS Safari 100vh bug */
+    height: 60vh; /* Still use vh for most browsers */
+    height: -webkit-fill-available; /* Use available height on iOS */
+    min-height: 300px;
+  }
+}
+
+/* Make tooltips more visible on mobile */
+.leaflet-tooltip {
+  font-weight: 500 !important;
+  padding: 8px 12px !important;
+  border-radius: 6px !important;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.15) !important;
+  font-size: 14px !important;
+}
+
+/* Loading message styling */
+#zotero-map-loading {
+  text-align: center;
+  font-size: 1em;
+  color: #666;
+  padding: 1em;
+  position: relative;
+  z-index: 5; /* Ensure loading message appears above map */
+}
+
+/* Mobile-specific adjustments */
+@media (max-width: 768px) {
+  #zotero-map {
+    height: 30vh; /* Smaller on mobile */
+    min-height: 200px;
+  }
+  
+  /* Make tooltips even more touch-friendly */
+  .leaflet-tooltip {
+    font-size: 16px !important;
+    padding: 10px 14px !important;
+  }
+  
+  /* Ensure buttons are large enough to tap */
+  .leaflet-control-zoom a {
+    width: 36px !important;
+    height: 36px !important;
+    line-height: 36px !important;
+  }
 }

@@ -2,49 +2,148 @@
 /*
 Plugin Name: Zotero Citation Map
 Description: Displays an interactive map linking countries to Zotero citation tags.
-Version: 1.1
+Version: 1.2
 Author: Daniel J. Vreeman, PT, DPT, MS, FACMI, FIAHSI
 */
 
 define('ZOTERO_MAP_OPTION_KEY', 'zotero_map_settings');
 
+function zotero_map_get_name_aliases() {
+    return [
+        "United States of America" => "United States",
+        "Russian Federation" => "Russia",
+        "Viet Nam" => "Vietnam",
+        "Iran (Islamic Republic of)" => "Iran",
+        "Venezuela (Bolivarian Republic of)" => "Venezuela",
+        "Syrian Arab Republic" => "Syria",
+        "Dem. Rep. Korea" => "North Korea",
+        "Republic of Korea" => "South Korea",
+        "Democratic Republic of the Congo" => "Congo, Dem. Rep.",
+        "Republic of the Congo" => "Congo, Rep.",
+        "Bolivia (Plurinational State of)" => "Bolivia",
+        "United Republic of Tanzania" => "Tanzania",
+        "Côte d'Ivoire" => "Cote d'Ivoire",
+        "Lao People's Democratic Republic" => "Laos",
+        "Egypt" => "Egypt, Arab Rep.",
+        "Gambia" => "Gambia, The",
+        "Bahamas" => "Bahamas, The",
+        "Yemen" => "Yemen, Rep.",
+        "Micronesia (Federated States of)" => "Micronesia, Fed. Sts.",
+        "Slovakia" => "Slovak Republic",
+        "Czechia" => "Czech Republic",
+        "Kyrgyzstan" => "Kyrgyz Republic",
+        "Brunei" => "Brunei Darussalam",
+        "Cabo Verde" => "Cape Verde",
+        "North Macedonia" => "Macedonia, FYR"
+    ];
+}
+
 function zotero_map_enqueue_scripts() {
-    wp_enqueue_style('leaflet-css', 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css');
-    wp_enqueue_style('zotero-map-css', plugin_dir_url(__FILE__) . 'css/map.css');
+    // Enqueue Leaflet CSS
+    wp_enqueue_style('leaflet-css', 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css', [], '1.9.4');
+    wp_enqueue_style('zotero-map-css', plugin_dir_url(__FILE__) . 'css/map.css', ['leaflet-css'], '1.0.2');
 
-    wp_enqueue_script('leaflet-js', 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', [], null, true);
-    wp_enqueue_script('zotero-map-js', plugin_dir_url(__FILE__) . 'js/map.js', ['leaflet-js'], null, true);
+    // Ensure jQuery is loaded
+    wp_enqueue_script('jquery');
+    
+    // Enqueue Leaflet JS with version specified and NO defer attribute
+    wp_enqueue_script('leaflet-js', 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', ['jquery'], '1.9.4', true);
+    
+    // Remove 'defer' attribute from Leaflet script
+    add_filter('script_loader_tag', 'zotero_map_remove_defer_from_leaflet', 10, 3);
+    
+    // Add a short delay before loading our script to ensure Leaflet is fully loaded
+    wp_enqueue_script('zotero-map-js', plugin_dir_url(__FILE__) . 'js/map.js', ['jquery', 'leaflet-js'], '1.0.5', true);
 
-    $settings = get_option(ZOTERO_MAP_OPTION_KEY, []);
+    // Prepare map data
     $upload_dir = wp_upload_dir();
     $json_path = $upload_dir['basedir'] . '/zotero-map/country_tag_map.json';
     $map_data = file_exists($json_path) ? json_decode(file_get_contents($json_path), true) : [];
 
-    
+    // Ensure map_data is never null
+    if ($map_data === null) {
+        $map_data = [];
+    }
+
     $colors = [
-        'highlight' => get_option('zotero_map_highlight_color', '#0073e6'),
-        'default' => get_option('zotero_map_default_color', '#dddddd'),
-        'border' => get_option('zotero_map_border_color', '#444444'),
+        'highlight' => get_option('zotero_map_highlight_color', '#ec2227'),
+        'default'   => get_option('zotero_map_default_color', '#e4e4e4'),
+        'border'    => get_option('zotero_map_border_color', '#ababab'),
     ];
+
+    // Localize the script with our data
     wp_localize_script('zotero-map-js', 'ZoteroMapData', [
         'countryUrls' => $map_data,
-        'mapColors' => $colors
-    ,
+        'mapColors'   => $colors,
+        'waterColor'  => get_option('zotero_map_water_color', '#ffffff'),
+        'enableExport'=> (bool) get_option('zotero_map_enable_export', false),
+        'geojsonUrl'  => plugins_url('data/world.geo.json', __FILE__),
         'nameAliases' => zotero_map_get_name_aliases(),
-        'waterColor' => get_option('zotero_map_water_color', '#b3d1ff'),
-        'mapColors' => [
-            'highlight' => get_option('zotero_map_highlight_color', '#ec2227'),
-            'default' => get_option('zotero_map_default_color', '#e4e4e4'),
-            'border' => get_option('zotero_map_border_color', '#ababab')
-        ],
-        'waterColor' => get_option('zotero_map_water_color', '#ffffff'),
-        'enableExport' => (bool) get_option('zotero_map_enable_export', false)]);
-    
+        'pluginUrl'   => plugin_dir_url(__FILE__),
+    ]);
+}
+
+// Function to remove defer attribute from Leaflet script
+function zotero_map_remove_defer_from_leaflet($tag, $handle, $src) {
+    if ('leaflet-js' === $handle) {
+        // Remove defer attribute if present
+        $tag = str_replace(' defer', '', $tag);
+        $tag = str_replace("='defer'", '', $tag);
+        $tag = str_replace('="defer"', '', $tag);
+    }
+    return $tag;
 }
 add_action('wp_enqueue_scripts', 'zotero_map_enqueue_scripts');
 
 function zotero_map_shortcode() {
-    return '<div id="zotero-map" style="height:600px;"></div><noscript><p>This map requires JavaScript to be enabled.</p></noscript>';
+    // Get our colors and settings
+    $highlight = get_option('zotero_map_highlight_color', '#ec2227');
+    $default   = get_option('zotero_map_default_color', '#e4e4e4');
+    $border    = get_option('zotero_map_border_color', '#ababab');
+    $water     = get_option('zotero_map_water_color', '#ffffff');
+    
+    $upload_dir = wp_upload_dir();
+    $json_path = $upload_dir['basedir'] . '/zotero-map/country_tag_map.json';
+    $map_data = file_exists($json_path) ? json_decode(file_get_contents($json_path), true) : [];
+    
+    // Ensure we have valid JSON
+    if ($map_data === null) {
+        $map_data = [];
+    }
+
+    // Convert map data to JSON for inline use
+    $map_data_json = json_encode($map_data);
+    $name_aliases_json = json_encode(zotero_map_get_name_aliases());
+    
+    // Include directly in the output
+    $output = '<div id="zotero-map-loading" style="text-align: center; padding: 20px;">Loading map...</div>';
+    $output .= '<div id="zotero-map" style="height: 60vh; min-height: 300px; width: 100%; background-color: ' . esc_attr($water) . ';"></div>';
+    
+    // Add a fallback noscript message
+    $output .= '<noscript><div style="text-align: center; padding: 20px; color: #ff0000;">JavaScript is required to view this map. Please enable JavaScript in your browser settings.</div></noscript>';
+    
+    // Add inline script to only set up the data, not initialize the map
+    $output .= '<script>
+        // Set up the data for map.js to use
+        window.ZoteroMapData = {
+            countryUrls: ' . $map_data_json . ',
+            mapColors: {
+                highlight: "' . esc_js($highlight) . '",
+                default: "' . esc_js($default) . '",
+                border: "' . esc_js($border) . '"
+            },
+            waterColor: "' . esc_js($water) . '",
+            enableExport: ' . (get_option('zotero_map_enable_export', false) ? 'true' : 'false') . ',
+            geojsonUrl: "' . esc_js(plugins_url('data/world.geo.json', __FILE__)) . '",
+            nameAliases: ' . $name_aliases_json . ',
+            pluginUrl: "' . esc_js(plugin_dir_url(__FILE__)) . '"
+        };
+        
+        // No map initialization here - let map.js handle it
+        console.log("Zotero Map: Data prepared for map.js initialization");
+    </script>';
+    
+    return $output;
 }
 add_shortcode('zotero_citation_map', 'zotero_map_shortcode');
 
@@ -79,67 +178,12 @@ function zotero_map_update_countries() {
     file_put_contents("$data_dir/world_bank_countries.json", json_encode($countries, JSON_PRETTY_PRINT));
 }
 
-
-
 function log_zotero_event($message) {
     $upload_dir = wp_upload_dir();
     $log_file = $upload_dir['basedir'] . '/zotero-map/update.log';
     $timestamp = date('Y-m-d H:i:s');
     file_put_contents($log_file, "[$timestamp] $message\n", FILE_APPEND);
 }
-
-// Manual trigger with admin notice
-add_action('admin_init', function () {
-    if (isset($_GET['trigger_zotero_map_update'])) {
-        try {
-            zotero_map_update_json();
-            log_zotero_event("Manual Zotero tag update succeeded.");
-            add_action('admin_notices', function () {
-                echo '<div class="notice notice-success is-dismissible"><p>Zotero tag map updated successfully.</p></div>';
-            });
-        } catch (Exception $e) {
-            log_zotero_event("Manual Zotero tag update failed: " . $e->getMessage());
-            add_action('admin_notices', function () use ($e) {
-                echo '<div class="notice notice-error"><p>Error updating Zotero tag map: ' . esc_html($e->getMessage()) . '</p></div>';
-            });
-        }
-    }
-});
-
-
-
-// Manual trigger for World Bank country list update
-add_action('admin_init', function () {
-    if (isset($_GET['trigger_world_bank_update'])) {
-        try {
-            zotero_map_update_countries();
-            log_zotero_event("Manual World Bank country list update succeeded.");
-            add_action('admin_notices', function () {
-                echo '<div class="notice notice-success is-dismissible"><p>World Bank country list updated successfully.</p></div>';
-            });
-        } catch (Exception $e) {
-            log_zotero_event("Manual World Bank country list update failed: " . $e->getMessage());
-            add_action('admin_notices', function () use ($e) {
-                echo '<div class="notice notice-error"><p>Error updating World Bank country list: ' . esc_html($e->getMessage()) . '</p></div>';
-            });
-        }
-    }
-});
-
-require_once plugin_dir_path(__FILE__) . 'admin-page.php';
-
-
-// Save map color options
-add_action('admin_init', function () {
-    if (isset($_POST['zotero_map_save_colors']) && check_admin_referer('zotero_map_save_colors')) {
-        update_option('zotero_map_highlight_color', sanitize_hex_color($_POST['highlight_color']));
-        update_option('zotero_map_default_color', sanitize_hex_color($_POST['default_color']));
-        update_option('zotero_map_border_color', sanitize_hex_color($_POST['border_color']));
-        update_option('zotero_map_water_color', sanitize_hex_color($_POST['water_color']));
-    }
-});
-
-
 
 function zotero_map_update_json() {
     $settings = get_option('zotero_map_settings', []);
@@ -205,36 +249,48 @@ function zotero_map_update_json() {
     log_zotero_event("✅ Finished writing country_tag_map.json with " . count($country_map) . " entries.");
 }
 
+add_action('admin_init', function () {
+    if (isset($_GET['trigger_zotero_map_update'])) {
+        try {
+            zotero_map_update_json();
+            log_zotero_event("Manual Zotero tag update succeeded.");
+            add_action('admin_notices', function () {
+                echo '<div class="notice notice-success is-dismissible"><p>Zotero tag map updated successfully.</p></div>';
+            });
+        } catch (Exception $e) {
+            log_zotero_event("Manual Zotero tag update failed: " . $e->getMessage());
+            add_action('admin_notices', function () use ($e) {
+                echo '<div class="notice notice-error"><p>Error updating Zotero tag map: ' . esc_html($e->getMessage()) . '</p></div>';
+            });
+        }
+    }
+});
 
+add_action('admin_init', function () {
+    if (isset($_GET['trigger_world_bank_update'])) {
+        try {
+            zotero_map_update_countries();
+            log_zotero_event("Manual World Bank country list update succeeded.");
+            add_action('admin_notices', function () {
+                echo '<div class="notice notice-success is-dismissible"><p>World Bank country list updated successfully.</p></div>';
+            });
+        } catch (Exception $e) {
+            log_zotero_event("Manual World Bank country list update failed: " . $e->getMessage());
+            add_action('admin_notices', function () use ($e) {
+                echo '<div class="notice notice-error"><p>Error updating World Bank country list: ' . esc_html($e->getMessage()) . '</p></div>';
+            });
+        }
+    }
+});
 
+// Save map color options
+add_action('admin_init', function () {
+    if (isset($_POST['zotero_map_save_colors']) && check_admin_referer('zotero_map_save_colors')) {
+        update_option('zotero_map_highlight_color', sanitize_hex_color($_POST['highlight_color']));
+        update_option('zotero_map_default_color', sanitize_hex_color($_POST['default_color']));
+        update_option('zotero_map_border_color', sanitize_hex_color($_POST['border_color']));
+        update_option('zotero_map_water_color', sanitize_hex_color($_POST['water_color']));
+    }
+});
 
-function zotero_map_get_name_aliases() {
-    return [
-        "United States of America" => "United States",
-        "Russian Federation" => "Russia",
-        "Viet Nam" => "Vietnam",
-        "Iran (Islamic Republic of)" => "Iran",
-        "Venezuela (Bolivarian Republic of)" => "Venezuela",
-        "Syrian Arab Republic" => "Syria",
-        "Dem. Rep. Korea" => "North Korea",
-        "Republic of Korea" => "South Korea",
-        "Democratic Republic of the Congo" => "Congo, Dem. Rep.",
-        "Republic of the Congo" => "Congo, Rep.",
-        "Bolivia (Plurinational State of)" => "Bolivia",
-        "United Republic of Tanzania" => "Tanzania",
-        "Côte d'Ivoire" => "Cote d'Ivoire",
-        "Lao People's Democratic Republic" => "Laos",
-        "Egypt" => "Egypt, Arab Rep.",
-        "Gambia" => "Gambia, The",
-        "Bahamas" => "Bahamas, The",
-        "Yemen" => "Yemen, Rep.",
-        "Micronesia (Federated States of)" => "Micronesia, Fed. Sts.",
-        "Slovakia" => "Slovak Republic",
-        "Czechia" => "Czech Republic",
-        "Kyrgyzstan" => "Kyrgyz Republic",
-        "Brunei" => "Brunei Darussalam",
-        "Cabo Verde" => "Cape Verde",
-        "North Macedonia" => "Macedonia, FYR"
-    ];
-}
-
+require_once plugin_dir_path(__FILE__) . 'admin-page.php';
