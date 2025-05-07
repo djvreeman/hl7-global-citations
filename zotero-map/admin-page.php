@@ -1,60 +1,98 @@
 <?php
-add_action('admin_menu', function () {
-    add_options_page('Zotero Map Settings', 'Zotero Map', 'manage_options', 'zotero-map', 'zotero_map_settings_page');
-});
-
-function zotero_map_settings_page() {
-    $highlight = get_option('zotero_map_highlight_color', '#ec2227');
-    $default   = get_option('zotero_map_default_color', '#e4e4e4');
-    $border    = get_option('zotero_map_border_color', '#ababab');
-    $water     = get_option('zotero_map_water_color', '#ffffff');
-    $enable_export = get_option('zotero_map_enable_export', false);
-    $upload_dir = wp_upload_dir();
-    $log_path = $upload_dir['basedir'] . '/zotero-map/update.log';
-    $country_path = $upload_dir['basedir'] . '/zotero-map/world_bank_countries.json';
-    $countries = file_exists($country_path) ? json_decode(file_get_contents($country_path), true) : [];
-    ?>
-    <div class="wrap">
-      <h1>Zotero Map Settings</h1>
-
-      <form method="post">
-        <?php wp_nonce_field('zotero_map_save_colors'); ?>
-        <h2>Color Settings</h2>
-        <table class="form-table">
-          <tr><th>Highlight Color</th><td><input type="color" name="highlight_color" value="<?php echo esc_attr($highlight); ?>"></td></tr>
-          <tr><th>Default Color</th><td><input type="color" name="default_color" value="<?php echo esc_attr($default); ?>"></td></tr>
-          <tr><th>Border Color</th><td><input type="color" name="border_color" value="<?php echo esc_attr($border); ?>"></td></tr>
-          <tr><th>Water Color</th><td><input type="color" name="water_color" value="<?php echo esc_attr($water); ?>"></td></tr>
-        </table>
-        <p><input type="submit" name="zotero_map_save_colors" class="button-primary" value="Save Colors"></p>
-      </form>
-
-      <form method="post">
-        <?php wp_nonce_field('zotero_map_clear_log'); ?>
-        <p><input type="submit" name="zotero_map_clear_log" class="button" value="Clear Update Log"></p>
-      </form>
-
-      <form method="post" enctype="multipart/form-data">
-        <?php wp_nonce_field('zotero_map_import_settings'); ?>
-        <p>Import Settings JSON: <input type="file" name="zotero_settings_file">
-        <input type="submit" name="zotero_map_import" class="button" value="Import"></p>
-      </form>
-
-      <p><a href="?page=zotero-map&zotero_map_export=true" class="button">Export Settings</a></p>
-
-      <form method="post">
-        <?php wp_nonce_field('zotero_map_toggle_export'); ?>
-        <h2>Export Option</h2>
-        <label><input type="checkbox" name="enable_export" value="1" <?php checked($enable_export, true); ?>> Enable "Export Map as PNG" Button</label>
-        <p><input type="submit" name="zotero_map_toggle_export" class="button" value="Save Export Setting"></p>
-      </form>
-
-      <hr>
-      <h2>Manual Data Updates</h2>
-      <p>
-        <a href="?trigger_zotero_map_update=true" class="button button-secondary">🔄 Update Zotero Map Data</a>
-        <a href="?trigger_world_bank_update=true" class="button button-secondary">🌍 Update World Bank Country List</a>
-      </p>
-    </div>
-    <?php
+if (!current_user_can('manage_options')) {
+    wp_die(__('You do not have sufficient permissions to access this page.'));
 }
+
+$zotero_settings = get_option('zotero_map_settings', [
+    'group_id' => '',
+    'library' => '',
+    'collections' => []
+]);
+
+if (isset($_POST['zotero_map_save_settings']) && check_admin_referer('zotero_map_save_settings')) {
+    $zotero_settings['group_id'] = sanitize_text_field($_POST['group_id']);
+    $zotero_settings['library'] = sanitize_text_field($_POST['library']);
+    $collections_raw = explode(',', $_POST['collections']);
+    $zotero_settings['collections'] = array_filter(array_map('sanitize_text_field', $collections_raw));
+
+    update_option('zotero_map_settings', $zotero_settings);
+
+    echo '<div class="updated"><p><strong>Settings saved.</strong></p></div>';
+}
+?>
+
+<div class="wrap">
+    <h1>Zotero Citation Map Settings</h1>
+
+    <!-- Map Color Settings -->
+    <form method="post">
+        <?php wp_nonce_field('zotero_map_save_colors'); ?>
+        <h2>Map Color Configuration</h2>
+        <table class="form-table">
+            <tr>
+                <th scope="row"><label for="highlight_color">Highlight Color</label></th>
+                <td><input name="highlight_color" type="text" id="highlight_color" value="<?php echo esc_attr(get_option('zotero_map_highlight_color', '#ec2227')); ?>" class="regular-text"></td>
+            </tr>
+            <tr>
+                <th scope="row"><label for="default_color">Default Color</label></th>
+                <td><input name="default_color" type="text" id="default_color" value="<?php echo esc_attr(get_option('zotero_map_default_color', '#e4e4e4')); ?>" class="regular-text"></td>
+            </tr>
+            <tr>
+                <th scope="row"><label for="border_color">Border Color</label></th>
+                <td><input name="border_color" type="text" id="border_color" value="<?php echo esc_attr(get_option('zotero_map_border_color', '#ababab')); ?>" class="regular-text"></td>
+            </tr>
+            <tr>
+                <th scope="row"><label for="water_color">Water Color</label></th>
+                <td><input name="water_color" type="text" id="water_color" value="<?php echo esc_attr(get_option('zotero_map_water_color', '#ffffff')); ?>" class="regular-text"></td>
+            </tr>
+        </table>
+        <?php submit_button('Save Map Colors', 'primary', 'zotero_map_save_colors'); ?>
+    </form>
+
+    <hr>
+
+    <!-- Zotero API Settings -->
+    <form method="post">
+        <?php wp_nonce_field('zotero_map_save_settings'); ?>
+        <h2>Zotero API Configuration</h2>
+        <table class="form-table">
+            <tr>
+                <th scope="row"><label for="group_id">Group ID</label></th>
+                <td><input name="group_id" type="text" id="group_id" value="<?php echo esc_attr($zotero_settings['group_id']); ?>" class="regular-text"></td>
+            </tr>
+            <tr>
+                <th scope="row"><label for="library">Library Name</label></th>
+                <td><input name="library" type="text" id="library" value="<?php echo esc_attr($zotero_settings['library']); ?>" class="regular-text"></td>
+            </tr>
+            <tr>
+                <th scope="row"><label for="collections">Collection Keys (comma-separated)</label></th>
+                <td><input name="collections" type="text" id="collections" value="<?php echo esc_attr(implode(',', $zotero_settings['collections'])); ?>" class="large-text"></td>
+            </tr>
+        </table>
+        <?php submit_button('Save Zotero Settings', 'primary', 'zotero_map_save_settings'); ?>
+    </form>
+</div>
+
+<!-- Cachce Settings -->
+<h2>Chart Cache Management</h2>
+<p>This will attempt to clear locally cached chart data in the browser (if supported).</p>
+<button id="clear-zotero-cache" class="button button-secondary">Clear Cached Chart Data</button>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const btn = document.getElementById('clear-zotero-cache');
+    btn.addEventListener('click', function () {
+        const keysToClear = [];
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith('zotero_')) {
+                keysToClear.push(key);
+            }
+        }
+
+        keysToClear.forEach(key => localStorage.removeItem(key));
+
+        alert('Zotero chart cache cleared from localStorage.');
+    });
+});
+</script>

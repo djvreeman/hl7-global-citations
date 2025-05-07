@@ -1,8 +1,8 @@
 <?php
 /*
 Plugin Name: Zotero Citation Map
-Description: Displays an interactive map linking countries to Zotero citation tags.
-Version: 1.2
+Description: Displays an interactive map linking countries to Zotero citation tags and a bar chart of citation counts by year.
+Version: 1.3
 Author: Daniel J. Vreeman, PT, DPT, MS, FACMI, FIAHSI
 */
 
@@ -39,28 +39,28 @@ function zotero_map_get_name_aliases() {
 }
 
 function zotero_map_enqueue_scripts() {
-    // Enqueue Leaflet CSS
+    // Ensure jQuery is loaded first
+    wp_enqueue_script('jquery');
+    
+    // First enqueue styles
     wp_enqueue_style('leaflet-css', 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css', [], '1.9.4');
     wp_enqueue_style('zotero-map-css', plugin_dir_url(__FILE__) . 'css/map.css', ['leaflet-css'], '1.0.2');
 
-    // Ensure jQuery is loaded
-    wp_enqueue_script('jquery');
+    // Then enqueue scripts - load Chart.js first
+    wp_enqueue_script('chartjs', 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js', ['jquery'], '4.4.1', true);
     
-    // Enqueue Leaflet JS with version specified and NO defer attribute
+    // Then load Leaflet and make sure to remove defer
     wp_enqueue_script('leaflet-js', 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', ['jquery'], '1.9.4', true);
-    
-    // Remove 'defer' attribute from Leaflet script
     add_filter('script_loader_tag', 'zotero_map_remove_defer_from_leaflet', 10, 3);
     
-    // Add a short delay before loading our script to ensure Leaflet is fully loaded
-    wp_enqueue_script('zotero-map-js', plugin_dir_url(__FILE__) . 'js/map.js', ['jquery', 'leaflet-js'], '1.0.5', true);
+    // Only after that, load your scripts
+    wp_enqueue_script('zotero-map-js', plugin_dir_url(__FILE__) . 'js/map.js', ['jquery', 'leaflet-js', 'chartjs'], '1.0.5', true);
+    wp_enqueue_script('zotero-bar-js', plugin_dir_url(__FILE__) . 'js/zotero-bar-chart.js', ['jquery', 'chartjs'], '1.0.0', true);
 
-    // Prepare map data
     $upload_dir = wp_upload_dir();
     $json_path = $upload_dir['basedir'] . '/zotero-map/country_tag_map.json';
     $map_data = file_exists($json_path) ? json_decode(file_get_contents($json_path), true) : [];
 
-    // Ensure map_data is never null
     if ($map_data === null) {
         $map_data = [];
     }
@@ -71,7 +71,6 @@ function zotero_map_enqueue_scripts() {
         'border'    => get_option('zotero_map_border_color', '#ababab'),
     ];
 
-    // Localize the script with our data
     wp_localize_script('zotero-map-js', 'ZoteroMapData', [
         'countryUrls' => $map_data,
         'mapColors'   => $colors,
@@ -83,20 +82,17 @@ function zotero_map_enqueue_scripts() {
     ]);
 }
 
-// Function to remove defer attribute from Leaflet script
+// Fix the remove defer function to be more robust
 function zotero_map_remove_defer_from_leaflet($tag, $handle, $src) {
     if ('leaflet-js' === $handle) {
-        // Remove defer attribute if present
-        $tag = str_replace(' defer', '', $tag);
-        $tag = str_replace("='defer'", '', $tag);
-        $tag = str_replace('="defer"', '', $tag);
+        // More comprehensive approach to remove defer attributes
+        $tag = preg_replace('/ defer(=[\'"]defer[\'"])?/', '', $tag);
     }
     return $tag;
 }
 add_action('wp_enqueue_scripts', 'zotero_map_enqueue_scripts');
 
 function zotero_map_shortcode() {
-    // Get our colors and settings
     $highlight = get_option('zotero_map_highlight_color', '#ec2227');
     $default   = get_option('zotero_map_default_color', '#e4e4e4');
     $border    = get_option('zotero_map_border_color', '#ababab');
@@ -105,26 +101,18 @@ function zotero_map_shortcode() {
     $upload_dir = wp_upload_dir();
     $json_path = $upload_dir['basedir'] . '/zotero-map/country_tag_map.json';
     $map_data = file_exists($json_path) ? json_decode(file_get_contents($json_path), true) : [];
-    
-    // Ensure we have valid JSON
+
     if ($map_data === null) {
         $map_data = [];
     }
 
-    // Convert map data to JSON for inline use
     $map_data_json = json_encode($map_data);
     $name_aliases_json = json_encode(zotero_map_get_name_aliases());
     
-    // Include directly in the output
     $output = '<div id="zotero-map-loading" style="text-align: center; padding: 20px;">Loading map...</div>';
     $output .= '<div id="zotero-map" style="height: 60vh; min-height: 300px; width: 100%; background-color: ' . esc_attr($water) . ';"></div>';
-    
-    // Add a fallback noscript message
     $output .= '<noscript><div style="text-align: center; padding: 20px; color: #ff0000;">JavaScript is required to view this map. Please enable JavaScript in your browser settings.</div></noscript>';
-    
-    // Add inline script to only set up the data, not initialize the map
     $output .= '<script>
-        // Set up the data for map.js to use
         window.ZoteroMapData = {
             countryUrls: ' . $map_data_json . ',
             mapColors: {
@@ -138,11 +126,7 @@ function zotero_map_shortcode() {
             nameAliases: ' . $name_aliases_json . ',
             pluginUrl: "' . esc_js(plugin_dir_url(__FILE__)) . '"
         };
-        
-        // No map initialization here - let map.js handle it
-        console.log("Zotero Map: Data prepared for map.js initialization");
     </script>';
-    
     return $output;
 }
 add_shortcode('zotero_citation_map', 'zotero_map_shortcode');
@@ -293,4 +277,105 @@ add_action('admin_init', function () {
     }
 });
 
-require_once plugin_dir_path(__FILE__) . 'admin-page.php';
+add_action('admin_menu', function () {
+    add_options_page('Zotero Map Settings', 'Zotero Map', 'manage_options', 'zotero-map-settings', function () {
+        require plugin_dir_path(__FILE__) . 'admin-page.php';
+    });
+});
+
+// Cache Functions
+
+add_action('admin_menu', function () {
+    add_options_page('Zotero Map Settings', 'Zotero Map', 'manage_options', 'zotero-map-settings', function () {
+        require plugin_dir_path(__FILE__) . 'admin-page.php';
+    });
+});
+
+add_action('admin_init', function () {
+    if (isset($_GET['zotero_clear_cache']) && current_user_can('manage_options')) {
+        $upload_dir = wp_upload_dir();
+        $cache_dir = $upload_dir['basedir'] . '/zotero-map/cache';
+
+        if (file_exists($cache_dir)) {
+            foreach (glob("$cache_dir/*.json") as $file) {
+                unlink($file);
+            }
+        }
+
+        log_zotero_event("✅ Admin manually cleared bar chart cache.");
+
+        add_action('admin_notices', function () {
+            echo '<div class="notice notice-success is-dismissible"><p>Zotero bar chart cache cleared.</p></div>';
+        });
+    }
+});
+
+// Register additional shortcode for bar chart
+add_shortcode('zotero_bar_chart', function ($atts) {
+    static $chart_counter = 0;
+    $chart_counter++;
+    $chart_id = 'zotero-bar-chart-' . $chart_counter;
+
+    $atts = shortcode_atts([
+        'group_id' => '',
+        'collection' => '',
+        'color' => '#ec2227',
+        'extrapolate' => false,
+        'width' => '100%',
+        'height' => '400px',
+    ], $atts);
+
+    $data = [
+        'group_id' => $atts['group_id'],
+        'collection' => $atts['collection'],
+        'color' => $atts['color'],
+        'extrapolate' => filter_var($atts['extrapolate'], FILTER_VALIDATE_BOOLEAN),
+        'chartId' => $chart_id,
+    ];
+
+    $js_var = 'zoteroBarChartSettings_' . $chart_counter;
+    
+    // Add the settings BEFORE the canvas element
+    ob_start();
+    echo '<script type="text/javascript">window.' . esc_js($js_var) . ' = ' . json_encode($data) . ';</script>';
+    echo '<canvas id="' . esc_attr($chart_id) . '" style="width:' . esc_attr($atts['width']) . '; height:' . esc_attr($atts['height']) . '"></canvas>';
+    return ob_get_clean();
+});
+
+// Handle bar chart cache uploads via AJAX
+add_action('wp_ajax_zotero_generate_barchart_cache', 'zotero_generate_barchart_cache');
+
+function zotero_generate_barchart_cache() {
+    if (!isset($_POST['group_id']) || !isset($_POST['collection'])) {
+        wp_send_json_error("Missing required parameters", 400);
+    }
+
+    $group_id = sanitize_text_field($_POST['group_id']);
+    $collection = sanitize_text_field($_POST['collection']);
+
+    $url = "https://api.zotero.org/groups/$group_id/collections/$collection/items?include=data&limit=100&start=";
+    $all_items = [];
+    $start = 0;
+
+    while (true) {
+        $response = wp_remote_get($url . $start);
+        if (is_wp_error($response)) {
+            wp_send_json_error("Zotero API error: " . $response->get_error_message(), 500);
+        }
+
+        $items = json_decode(wp_remote_retrieve_body($response), true);
+        if (!is_array($items) || empty($items)) break;
+
+        $all_items = array_merge($all_items, $items);
+        $start += count($items);
+    }
+
+    $upload_dir = wp_upload_dir();
+    $cache_dir = $upload_dir['basedir'] . '/zotero-map';
+    if (!file_exists($cache_dir)) wp_mkdir_p($cache_dir);
+
+    $cache_filename = "$cache_dir/bar_chart_{$group_id}_{$collection}.json";
+    file_put_contents($cache_filename, json_encode($all_items, JSON_PRETTY_PRINT));
+
+    wp_send_json_success("Cache saved", 200);
+}

@@ -68,4 +68,12 @@
     height: 36px !important;
     line-height: 36px !important;
   }
+  
+  /* Citation Chart Styles */
+  
+  canvas {
+    max-width: 100%;
+    height: auto !important;
+    display: block;
+  }
 }
