@@ -1,0 +1,666 @@
+# Zotero Visualizations WordPress Plugin
+
+A WordPress plugin that creates interactive visualizations from Zotero collections, including clickable world maps and timeline bar charts with future projections.
+
+# Zotero Visualizations WordPress Plugin
+
+A WordPress plugin that creates interactive visualizations from Zotero collections, including clickable world maps and timeline bar charts with future projections.
+
+## Features
+
+- **Interactive World Map**: Display countries with tagged citations using color-coding
+- **Clickable Countries**: Click countries to open filtered Zotero library views
+- **Timeline Bar Chart**: Show publication counts over time with intelligent future projections
+- **Multiple Collection Support**: Handle full libraries and specific collections from the same Zotero group
+- **Admin Interface**: Easy configuration with auto-parsing of Zotero URLs
+- **Built-in Documentation**: README viewer in WordPress admin with Parsedown support
+- **Automatic Caching**: Daily updates with manual refresh option
+- **Customizable Colors**: Configure map and chart colors to match your theme
+- **SVG Tooltips**: Smooth, cursor-following tooltips with citation counts
+
+## Installation
+
+1. **Create plugin directory structure**:
+   ```
+   wp-content/plugins/zotero-visualizations/
+   ├── zotero-viz.php
+   ├── assets/
+   │   ├── zotero-viz.js
+   │   ├── zotero-viz.css
+   │   └── country-mappings.json
+   ├── includes/
+   │   └── Parsedown.php (optional, for enhanced README rendering)
+   └── README.md
+   ```
+
+2. **Copy the provided files**:
+   - Save the main PHP code as `zotero-viz.php`
+   - Save the JavaScript code as `assets/zotero-viz.js`
+   - Save the CSS code as `assets/zotero-viz.css`
+   - Create `country-mappings.json` with country name mappings
+   - **Optional**: Download Parsedown.php for enhanced documentation rendering
+
+3. **Enhanced Documentation Rendering (Optional)**:
+   For the best README display in the admin interface, download Parsedown:
+   - Visit https://github.com/erusev/parsedown/releases
+   - Download `Parsedown.php`
+   - Place it at `includes/Parsedown.php` in your plugin directory
+   - The plugin will automatically detect and use it for superior markdown rendering
+
+4. **Activate the plugin** through WordPress admin panel
+
+## Configuration
+
+1. Navigate to **Zotero Viz** in your WordPress admin menu
+2. Use the tabbed interface:
+   - **Settings**: Configure collections and colors
+   - **Cache Status**: Monitor data processing
+   - **Documentation**: View this README rendered in WordPress admin
+
+### Enhanced Collection Setup
+
+The plugin now supports **Display Names** to handle multiple views of the same Zotero library:
+
+**Example Setup**:
+- **Display Name**: `hl_standards_full` → **Library Name**: `hl_standards` → **Collection Key**: (empty)
+- **Display Name**: `hl_standards_fhir` → **Library Name**: `hl_standards` → **Collection Key**: `YN7AF94C`
+
+This allows you to visualize both the entire library and specific collections separately.
+
+### Method 1: Using Zotero URLs (Recommended)
+Simply paste a Zotero URL and the plugin will automatically extract information and suggest display names:
+
+**For a specific collection:**
+```
+https://www.zotero.org/groups/5872416/hl_standards/collections/YN7AF94C
+```
+*Auto-suggests display name: `hl_standards_collection`*
+
+**For an entire library:**
+```
+https://www.zotero.org/groups/5872416/hl_standards/library
+```
+*Auto-suggests display name: `hl_standards_full`*
+
+### Method 2: Manual Entry
+Configure each field manually:
+- **Display Name**: Unique identifier for shortcodes (e.g., `hl_standards_fhir`)
+- **Library Name**: Actual Zotero library name (e.g., `hl_standards`)
+- **Group ID**: Your Zotero group ID (numeric)
+- **Collection Key**: The collection key from Zotero (leave empty for entire library)
+
+### Color Configuration
+Customize visualization colors:
+- **Highlight Color**: Color for countries with citations (default: red)
+- **Default Color**: Color for countries without citations (default: light gray)
+- **Border Color**: Country border color (default: dark gray)
+- **Water Color**: Ocean/water background color (default: light blue)
+
+### Cache Management
+- Click **Save Settings** to save your configuration
+- Click **Refresh Cache Now** to fetch/update data
+- View cache status showing items cached, countries tagged, years covered, and last update time
+
+## Usage
+
+### World Map Shortcode
+
+Create interactive, clickable world maps:
+
+```
+[zotero_map library="display_name" width="100%" height="600px"]
+```
+
+**Parameters**:
+- `library` (required): The display name you configured
+- `width` (optional): Map width (default: 100%)
+- `height` (optional): Map height (default: 500px)
+
+**Examples**:
+```
+[zotero_map library="hl_standards_full" height="700px"]
+[zotero_map library="hl_standards_fhir" width="800px" height="600px"]
+```
+
+**Interactive Features**:
+- Hover over countries to see citation counts
+- Click countries with data to open filtered Zotero library views
+- Zoom and pan with mouse controls
+- Zoom buttons for precise navigation
+
+### Timeline Bar Chart Shortcode
+
+Create timeline visualizations with projections:
+
+```
+[zotero_timeline library="display_name" show_projection_note="true"]
+```
+
+**Parameters**:
+- `library` (required): The display name you configured
+- `width` (optional): Chart width (default: 100%)
+- `height` (optional): Chart height (default: 400px)
+- `show_projection_note` (optional): Show projection explanation (default: true)
+
+**Examples**:
+```
+[zotero_timeline library="hl_standards_full"]
+[zotero_timeline library="hl_standards_fhir" height="500px"]
+[zotero_timeline library="hl_fhir_full" show_projection_note="false"]
+```
+
+**Features**:
+- Actual data in dark red, projected data in light red
+- Intelligent projection based on current year progress and historical data
+- Hover effects and smooth animations
+- Responsive design with clear axis labels
+
+## Complete Usage Examples
+
+### Example 1: Research Organization with Multiple Collections
+
+**Admin Setup**:
+```
+Display Name: health_informatics_full
+Library Name: health_informatics  
+Collection Key: (empty)
+
+Display Name: health_informatics_fhir
+Library Name: health_informatics
+Collection Key: 7MQ854T6
+```
+
+**Page Content**:
+```
+## Complete Research Portfolio
+[zotero_timeline library="health_informatics_full" height="400px"]
+[zotero_map library="health_informatics_full" height="600px"]
+
+## FHIR-Specific Research
+[zotero_timeline library="health_informatics_fhir"]
+[zotero_map library="health_informatics_fhir"]
+```
+
+### Example 2: Academic Department Dashboard
+
+```
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+  <div>
+    <h3>Publications Over Time</h3>
+    [zotero_timeline library="dept_standards" height="300px"]
+  </div>
+  <div>
+    <h3>Global Collaboration</h3>
+    [zotero_map library="dept_standards" height="300px"]
+  </div>
+</div>
+```
+
+## Important Setup Requirements
+
+### Country Tagging in Zotero
+
+For maps to work correctly, tag Zotero items with **World Bank country names**:
+
+- ✅ **Correct**: `United States`, `United Kingdom`, `South Korea`, `Bangladesh`
+- ❌ **Incorrect**: `USA`, `UK`, `Korea`, `Bengal`
+
+**Supported Countries**: All 195+ World Bank countries including UN member states, observer states, and common territories.
+
+### Date Formatting for Timelines
+
+The plugin extracts years from Zotero date fields. **Supported formats**:
+- `2024` (year only)
+- `2024-05-15` (ISO format)
+- `May 15, 2024` (US format)
+- `15/05/2024` (European format)
+- Any string containing a recognizable 4-digit year
+
+### Current Year Projections
+
+Timeline charts automatically calculate projections for the current year using:
+- Historical publication rates from the previous year
+- Current year progress (days elapsed)
+- Weighted average of current vs. historical performance
+- Minimum 30-day threshold for reliable projections
+
+## Technical Details
+
+### Documentation System
+The plugin includes a built-in documentation viewer accessible from the WordPress admin:
+- **Auto-detection**: Supports `README.md`, `README.txt`, `README`, and case variants
+- **Parsedown Integration**: Enhanced markdown rendering when Parsedown.php is available
+- **Fallback Parser**: Basic markdown support without external dependencies
+- **Live Updates**: Documentation refreshes automatically when README file changes
+
+### Caching System
+- **Location**: `wp-content/cache/zotero-viz/`
+- **Format**: JSON files named by display name (e.g., `hl_standards_full.json`)
+- **Refresh**: Automatic daily refresh + manual refresh option
+- **Data Stored**: Citation counts, country mappings, timeline data, metadata
+
+### API Integration
+- **Zotero API v3** with proper rate limiting
+- **Batch Processing**: 100 items per request to avoid timeouts
+- **Error Handling**: Graceful degradation with informative error messages
+- **Filtering**: Automatically excludes attachments, notes, and trashed items
+
+### Performance Optimizations
+- **D3.js v7** for efficient DOM manipulation
+- **SVG-based tooltips** for smooth performance
+- **Conditional script loading** - only loads assets when shortcodes are present
+- **Smart caching** prevents unnecessary API calls
+
+## Dependencies
+
+### Required
+- **WordPress 5.0+**
+- **PHP 7.4+**
+- **D3.js v7** (loaded from CDN)
+- **TopoJSON v3** (loaded from CDN)
+
+### Optional
+- **Parsedown**: For enhanced README rendering in admin interface
+  - Download from: https://github.com/erusev/parsedown/releases
+  - Place at: `includes/Parsedown.php`
+  - Provides superior markdown parsing with security features
+
+## Troubleshooting
+
+### Common Issues
+
+**"Library data not found" Error**:
+- Verify display name matches exactly between admin and shortcode
+- Ensure cache has been refreshed after adding new collections
+- Check that cache directory is writable by WordPress
+
+**Countries Not Appearing on Map**:
+- Confirm country tags use World Bank naming conventions
+- Verify tags are properly applied to Zotero items (not just in titles/abstracts)
+- Check the valid countries list in PHP code
+
+**Timeline Shows No Data**:
+- Ensure Zotero items have date fields populated
+- Verify dates contain 4-digit years
+- Refresh cache after adding new dated items in Zotero
+
+**Clicking Countries Doesn't Work**:
+- Verify library configuration includes correct Group ID and Library Name
+- Check browser console for JavaScript errors
+- Ensure popup blockers aren't preventing new tabs
+
+**Documentation Not Rendering Properly**:
+- Check that README file exists in plugin directory
+- Consider adding Parsedown.php for enhanced rendering
+- View admin Documentation tab for parser status
+
+### Advanced Debugging
+
+Enable WordPress debug mode and check error logs:
+```php
+define('WP_DEBUG', true);
+define('WP_DEBUG_LOG', true);
+```
+
+Check JavaScript console for client-side errors and API response issues.
+
+## Customization
+
+### CSS Styling
+Override default styles in your theme:
+
+```css
+/* Map styling */
+.zotero-map {
+    border: 2px solid #333;
+    border-radius: 8px;
+}
+
+.zotero-map .country:hover {
+    opacity: 0.7;
+    cursor: pointer;
+}
+
+/* Timeline styling */
+.zotero-timeline {
+    background: #f9f9f9;
+    padding: 20px;
+}
+
+.zotero-timeline .bar.actual {
+    fill: #2c5aa0;
+}
+
+.zotero-timeline .bar.projected {
+    fill: #7fb3d3;
+}
+```
+
+### JavaScript Extensions
+Add custom functionality by extending the existing D3.js functions:
+
+```javascript
+// Custom map interaction
+document.addEventListener('DOMContentLoaded', function() {
+    // Add custom click handlers
+    // Modify tooltip behavior
+    // Add additional visualizations
+});
+```
+
+## Future Enhancement Ideas
+
+- **Regional Groupings**: Continent and World Bank region visualizations
+- **Multi-Library Aggregation**: Combine data from multiple Zotero groups
+- **Export Functionality**: Download visualizations as PNG/SVG
+- **Advanced Filtering**: Date ranges, author filters, tag categories
+- **Network Visualizations**: Co-authorship and citation networks
+- **Dashboard Widgets**: WordPress admin dashboard integration
+
+## Plugin Information
+
+- **Version**: 1.0.2
+- **Author**: Daniel J. Vreeman, PT, DPT, MS, FACMI, FIAHSI
+- **License**: GPL v2 or later
+- **Requires**: WordPress 5.0+, PHP 7.4+
+- **Dependencies**: D3.js v7, TopoJSON v3
+- **Optional**: Parsedown for enhanced documentation rendering
+
+## Credits
+
+Built with:
+- **D3.js** for interactive visualizations
+- **TopoJSON** for efficient world map data
+- **Zotero API** for bibliography integration
+- **World Bank** country naming standards
+- **Parsedown** for enhanced markdown processing (when available)
+
+### Enhanced Collection Setup
+
+The plugin now supports **Display Names** to handle multiple views of the same Zotero library:
+
+**Example Setup**:
+- **Display Name**: `hl_standards_full` → **Library Name**: `hl_standards` → **Collection Key**: (empty)
+- **Display Name**: `hl_standards_fhir` → **Library Name**: `hl_standards` → **Collection Key**: `YN7AF94C`
+
+This allows you to visualize both the entire library and specific collections separately.
+
+### Method 1: Using Zotero URLs (Recommended)
+Simply paste a Zotero URL and the plugin will automatically extract information and suggest display names:
+
+**For a specific collection:**
+```
+https://www.zotero.org/groups/5872416/hl_standards/collections/YN7AF94C
+```
+*Auto-suggests display name: `hl_standards_collection`*
+
+**For an entire library:**
+```
+https://www.zotero.org/groups/5872416/hl_standards/library
+```
+*Auto-suggests display name: `hl_standards_full`*
+
+### Method 2: Manual Entry
+Configure each field manually:
+- **Display Name**: Unique identifier for shortcodes (e.g., `hl_standards_fhir`)
+- **Library Name**: Actual Zotero library name (e.g., `hl_standards`)
+- **Group ID**: Your Zotero group ID (numeric)
+- **Collection Key**: The collection key from Zotero (leave empty for entire library)
+
+### Color Configuration
+Customize visualization colors:
+- **Highlight Color**: Color for countries with citations (default: red)
+- **Default Color**: Color for countries without citations (default: light gray)
+- **Border Color**: Country border color (default: dark gray)
+- **Water Color**: Ocean/water background color (default: light blue)
+
+### Cache Management
+- Click **Save Settings** to save your configuration
+- Click **Refresh Cache Now** to fetch/update data
+- View cache status showing items cached, countries tagged, years covered, and last update time
+
+## Usage
+
+### World Map Shortcode
+
+Create interactive, clickable world maps:
+
+```
+[zotero_map library="display_name" width="100%" height="600px"]
+```
+
+**Parameters**:
+- `library` (required): The display name you configured
+- `width` (optional): Map width (default: 100%)
+- `height` (optional): Map height (default: 500px)
+
+**Examples**:
+```
+[zotero_map library="hl_standards_full" height="700px"]
+[zotero_map library="hl_standards_fhir" width="800px" height="600px"]
+```
+
+**Interactive Features**:
+- Hover over countries to see citation counts
+- Click countries with data to open filtered Zotero library views
+- Zoom and pan with mouse controls
+- Zoom buttons for precise navigation
+
+### Timeline Bar Chart Shortcode
+
+Create timeline visualizations with projections:
+
+```
+[zotero_timeline library="display_name" show_projection_note="true"]
+```
+
+**Parameters**:
+- `library` (required): The display name you configured
+- `width` (optional): Chart width (default: 100%)
+- `height` (optional): Chart height (default: 400px)
+- `show_projection_note` (optional): Show projection explanation (default: true)
+
+**Examples**:
+```
+[zotero_timeline library="hl_standards_full"]
+[zotero_timeline library="hl_standards_fhir" height="500px"]
+[zotero_timeline library="hl_fhir_full" show_projection_note="false"]
+```
+
+**Features**:
+- Actual data in dark red, projected data in light red
+- Intelligent projection based on current year progress and historical data
+- Hover effects and smooth animations
+- Responsive design with clear axis labels
+
+## Complete Usage Examples
+
+### Example 1: Research Organization with Multiple Collections
+
+**Admin Setup**:
+```
+Display Name: health_informatics_full
+Library Name: health_informatics  
+Collection Key: (empty)
+
+Display Name: health_informatics_fhir
+Library Name: health_informatics
+Collection Key: 7MQ854T6
+```
+
+**Page Content**:
+```
+## Complete Research Portfolio
+[zotero_timeline library="health_informatics_full" height="400px"]
+[zotero_map library="health_informatics_full" height="600px"]
+
+## FHIR-Specific Research
+[zotero_timeline library="health_informatics_fhir"]
+[zotero_map library="health_informatics_fhir"]
+```
+
+### Example 2: Academic Department Dashboard
+
+```
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+  <div>
+    <h3>Publications Over Time</h3>
+    [zotero_timeline library="dept_standards" height="300px"]
+  </div>
+  <div>
+    <h3>Global Collaboration</h3>
+    [zotero_map library="dept_standards" height="300px"]
+  </div>
+</div>
+```
+
+## Important Setup Requirements
+
+### Country Tagging in Zotero
+
+For maps to work correctly, tag Zotero items with **World Bank country names**:
+
+- ✅ **Correct**: `United States`, `United Kingdom`, `South Korea`, `Bangladesh`
+- ❌ **Incorrect**: `USA`, `UK`, `Korea`, `Bengal`
+
+**Supported Countries**: All 195+ World Bank countries including UN member states, observer states, and common territories.
+
+### Date Formatting for Timelines
+
+The plugin extracts years from Zotero date fields. **Supported formats**:
+- `2024` (year only)
+- `2024-05-15` (ISO format)
+- `May 15, 2024` (US format)
+- `15/05/2024` (European format)
+- Any string containing a recognizable 4-digit year
+
+### Current Year Projections
+
+Timeline charts automatically calculate projections for the current year using:
+- Historical publication rates from the previous year
+- Current year progress (days elapsed)
+- Weighted average of current vs. historical performance
+- Minimum 30-day threshold for reliable projections
+
+## Technical Details
+
+### Caching System
+- **Location**: `wp-content/cache/zotero-viz/`
+- **Format**: JSON files named by display name (e.g., `hl_standards_full.json`)
+- **Refresh**: Automatic daily refresh + manual refresh option
+- **Data Stored**: Citation counts, country mappings, timeline data, metadata
+
+### API Integration
+- **Zotero API v3** with proper rate limiting
+- **Batch Processing**: 100 items per request to avoid timeouts
+- **Error Handling**: Graceful degradation with informative error messages
+- **Filtering**: Automatically excludes attachments, notes, and trashed items
+
+### Performance Optimizations
+- **D3.js v7** for efficient DOM manipulation
+- **SVG-based tooltips** for smooth performance
+- **Conditional script loading** - only loads assets when shortcodes are present
+- **Smart caching** prevents unnecessary API calls
+
+## Troubleshooting
+
+### Common Issues
+
+**"Library data not found" Error**:
+- Verify display name matches exactly between admin and shortcode
+- Ensure cache has been refreshed after adding new collections
+- Check that cache directory is writable by WordPress
+
+**Countries Not Appearing on Map**:
+- Confirm country tags use World Bank naming conventions
+- Verify tags are properly applied to Zotero items (not just in titles/abstracts)
+- Check the valid countries list in PHP code
+
+**Timeline Shows No Data**:
+- Ensure Zotero items have date fields populated
+- Verify dates contain 4-digit years
+- Refresh cache after adding new dated items in Zotero
+
+**Clicking Countries Doesn't Work**:
+- Verify library configuration includes correct Group ID and Library Name
+- Check browser console for JavaScript errors
+- Ensure popup blockers aren't preventing new tabs
+
+### Advanced Debugging
+
+Enable WordPress debug mode and check error logs:
+```php
+define('WP_DEBUG', true);
+define('WP_DEBUG_LOG', true);
+```
+
+Check JavaScript console for client-side errors and API response issues.
+
+## Customization
+
+### CSS Styling
+Override default styles in your theme:
+
+```css
+/* Map styling */
+.zotero-map {
+    border: 2px solid #333;
+    border-radius: 8px;
+}
+
+.zotero-map .country:hover {
+    opacity: 0.7;
+    cursor: pointer;
+}
+
+/* Timeline styling */
+.zotero-timeline {
+    background: #f9f9f9;
+    padding: 20px;
+}
+
+.zotero-timeline .bar.actual {
+    fill: #2c5aa0;
+}
+
+.zotero-timeline .bar.projected {
+    fill: #7fb3d3;
+}
+```
+
+### JavaScript Extensions
+Add custom functionality by extending the existing D3.js functions:
+
+```javascript
+// Custom map interaction
+document.addEventListener('DOMContentLoaded', function() {
+    // Add custom click handlers
+    // Modify tooltip behavior
+    // Add additional visualizations
+});
+```
+
+## Future Enhancement Ideas
+
+- **Regional Groupings**: Continent and World Bank region visualizations
+- **Multi-Library Aggregation**: Combine data from multiple Zotero groups
+- **Export Functionality**: Download visualizations as PNG/SVG
+- **Advanced Filtering**: Date ranges, author filters, tag categories
+- **Network Visualizations**: Co-authorship and citation networks
+- **Dashboard Widgets**: WordPress admin dashboard integration
+
+## Plugin Information
+
+- **Version**: 1.0.2
+- **Author**: Daniel J. Vreeman, PT, DPT, MS, FACMI, FIAHSI
+- **License**: GPL v2 or later
+- **Requires**: WordPress 5.0+, PHP 7.4+
+- **Dependencies**: D3.js v7, TopoJSON v3
+
+## Credits
+
+Built with:
+- **D3.js** for interactive visualizations
+- **TopoJSON** for efficient world map data
+- **Zotero API** for bibliography integration
+- **World Bank** country naming standards
