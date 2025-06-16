@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Zotero Visualizations
  * Description: Display interactive world maps and bar charts from Zotero collections
- * Version: 1.0.6
+ * Version: 1.0.7
  * Author: Daniel J. Vreeman, PT, DPT, MS, FACMI, FIAHSI
  * License: GPL v2 or later
  */
@@ -863,6 +863,137 @@ function zotero_viz_process_timeline_data($items) {
     ksort($year_counts);
     return $year_counts;
 }
+// Library stats shortcode
+add_shortcode('zotero_stats', 'zotero_viz_stats_shortcode');
+function zotero_viz_stats_shortcode($atts) {
+    $atts = shortcode_atts(array(
+        'library' => '', // Display name
+        'format' => 'default', // Options: 'default', 'simple', 'detailed'
+        'show_countries' => 'true',
+        'show_citations' => 'true',
+        'show_years' => 'false',
+        'style' => 'default' // Options: 'default', 'minimal', 'highlighted'
+    ), $atts);
+    
+    if (empty($atts['library'])) {
+        return '<p>Please specify a library display name.</p>';
+    }
+    
+    // Use display name for cache file lookup
+    $cache_file = ZOTERO_VIZ_CACHE_DIR . $atts['library'] . '.json';
+    if (!file_exists($cache_file)) {
+        return '<p>Library data not found. Please refresh cache. Looking for: ' . esc_html($atts['library']) . '</p>';
+    }
+    
+    $cache_data = json_decode(file_get_contents($cache_file), true);
+    
+    // Calculate statistics
+    $total_citations = $cache_data['item_count'] ?? 0;
+    $countries_count = count($cache_data['map'] ?? []);
+    $years_count = count($cache_data['timeline'] ?? []);
+    
+    // Get year range if we have timeline data
+    $year_range = '';
+    if (!empty($cache_data['timeline'])) {
+        $years = array_keys($cache_data['timeline']);
+        $min_year = min($years);
+        $max_year = max($years);
+        $year_range = ($min_year == $max_year) ? $min_year : $min_year . '–' . $max_year;
+    }
+    
+    // Build output based on format
+    $output = '';
+    
+    // Apply styling
+    $css_class = 'zotero-stats';
+    switch ($atts['style']) {
+        case 'minimal':
+            $css_class .= ' zotero-stats-minimal';
+            break;
+        case 'highlighted':
+            $css_class .= ' zotero-stats-highlighted';
+            break;
+        default:
+            $css_class .= ' zotero-stats-default';
+    }
+    
+    ob_start();
+    
+    switch ($atts['format']) {
+        case 'simple':
+            // Simple one-line format
+            $parts = array();
+            if ($atts['show_citations'] === 'true') {
+                $parts[] = number_format($total_citations) . ' citation' . ($total_citations != 1 ? 's' : '');
+            }
+            if ($atts['show_countries'] === 'true' && $countries_count > 0) {
+                $parts[] = $countries_count . ' countr' . ($countries_count != 1 ? 'ies' : 'y');
+            }
+            if ($atts['show_years'] === 'true' && $years_count > 0) {
+                $parts[] = $years_count . ' year' . ($years_count != 1 ? 's' : '') . ($year_range ? ' (' . $year_range . ')' : '');
+            }
+            
+            if (!empty($parts)) {
+                echo '<div class="' . esc_attr($css_class) . '">';
+                echo 'This library contains ' . implode(' pertaining to ', $parts) . '.';
+                echo '</div>';
+            }
+            break;
+            
+        case 'detailed':
+            // Detailed format with more information
+            echo '<div class="' . esc_attr($css_class) . '">';
+            echo '<div class="zotero-stats-header">Library Statistics</div>';
+            echo '<div class="zotero-stats-content">';
+            
+            if ($atts['show_citations'] === 'true') {
+                echo '<div class="zotero-stat-item">';
+                echo '<span class="zotero-stat-number">' . number_format($total_citations) . '</span> ';
+                echo '<span class="zotero-stat-label">total citation' . ($total_citations != 1 ? 's' : '') . '</span>';
+                echo '</div>';
+            }
+            
+            if ($atts['show_countries'] === 'true' && $countries_count > 0) {
+                echo '<div class="zotero-stat-item">';
+                echo '<span class="zotero-stat-number">' . $countries_count . '</span> ';
+                echo '<span class="zotero-stat-label">countr' . ($countries_count != 1 ? 'ies' : 'y') . ' represented</span>';
+                echo '</div>';
+            }
+            
+            if ($atts['show_years'] === 'true' && $years_count > 0) {
+                echo '<div class="zotero-stat-item">';
+                echo '<span class="zotero-stat-number">' . $years_count . '</span> ';
+                echo '<span class="zotero-stat-label">year' . ($years_count != 1 ? 's' : '') . ' covered</span>';
+                if ($year_range) {
+                    echo ' <span class="zotero-stat-range">(' . $year_range . ')</span>';
+                }
+                echo '</div>';
+            }
+            
+            echo '</div></div>';
+            break;
+            
+        default:
+            // Default format - matches your requested format
+            $parts = array();
+            
+            if ($atts['show_citations'] === 'true') {
+                $parts[] = '<strong>' . number_format($total_citations) . '</strong> total citation' . ($total_citations != 1 ? 's' : '');
+            }
+            
+            if ($atts['show_countries'] === 'true' && $countries_count > 0) {
+                $parts[] = '<strong>' . $countries_count . '</strong> countr' . ($countries_count != 1 ? 'ies' : 'y');
+            }
+            
+            if (!empty($parts)) {
+                echo '<div class="' . esc_attr($css_class) . '">';
+                echo 'This library contains ' . implode(' pertaining to ', $parts) . '.';
+                echo '</div>';
+            }
+    }
+    
+    return ob_get_clean();
+}
 
 // Cache refresh function
 function zotero_viz_refresh_all_caches() {
@@ -916,7 +1047,8 @@ function zotero_viz_enqueue_scripts() {
     $has_shortcodes = false;
     if ($current_post && isset($current_post->post_content)) {
         $has_shortcodes = has_shortcode($current_post->post_content, 'zotero_map') || 
-                         has_shortcode($current_post->post_content, 'zotero_timeline');
+                        has_shortcode($current_post->post_content, 'zotero_timeline') ||
+                        has_shortcode($current_post->post_content, 'zotero_stats');
     }
     
     // Also check if we're on a page that might use shortcodes in widgets or other contexts
@@ -927,7 +1059,8 @@ function zotero_viz_enqueue_scripts() {
             foreach ($wp_query->posts as $post) {
                 if (isset($post->post_content) && 
                     (has_shortcode($post->post_content, 'zotero_map') || 
-                     has_shortcode($post->post_content, 'zotero_timeline'))) {
+                    has_shortcode($post->post_content, 'zotero_timeline') ||
+                    has_shortcode($post->post_content, 'zotero_stats'))) {
                     $has_shortcodes = true;
                     break;
                 }
