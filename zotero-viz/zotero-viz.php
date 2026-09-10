@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Zotero Visualizations
  * Description: Display interactive world maps and bar charts from Zotero collections
- * Version: 1.0.7
+ * Version: 1.0.11
  * Author: Daniel J. Vreeman, PT, DPT, MS, FACMI, FIAHSI
  * License: GPL v2 or later
  */
@@ -13,17 +13,68 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('ZOTERO_VIZ_VERSION', '1.0.6'); // Increment this to force cache refresh
+define('ZOTERO_VIZ_VERSION', '1.0.11'); // Increment this to force asset/cache refresh
 define('ZOTERO_VIZ_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ZOTERO_VIZ_PLUGIN_URL', plugin_dir_url(__FILE__));
-define('ZOTERO_VIZ_CACHE_DIR', WP_CONTENT_DIR . '/cache/zotero-viz/');
+
+/**
+ * Persistent cache lives in uploads, not wp-content/cache.
+ * Caching plugins routinely delete everything under wp-content/cache.
+ */
+function zotero_viz_legacy_cache_dir() {
+    return WP_CONTENT_DIR . '/cache/zotero-viz/';
+}
+
+function zotero_viz_cache_dir() {
+    $upload = wp_upload_dir();
+    if (!empty($upload['error']) || empty($upload['basedir'])) {
+        return WP_CONTENT_DIR . '/zotero-viz-cache/';
+    }
+    return trailingslashit($upload['basedir']) . 'zotero-viz/';
+}
+
+function zotero_viz_ensure_cache_dir() {
+    $dir = zotero_viz_cache_dir();
+    if (!file_exists($dir)) {
+        wp_mkdir_p($dir);
+    }
+    if (is_dir($dir) && !file_exists($dir . 'index.php')) {
+        file_put_contents($dir . 'index.php', "<?php\n// Silence is golden.\n");
+    }
+    return is_dir($dir) && is_writable($dir);
+}
+
+function zotero_viz_cache_file($display_name) {
+    $safe = sanitize_file_name($display_name);
+    if ($safe === '') {
+        $safe = 'library';
+    }
+    return zotero_viz_cache_dir() . $safe . '.json';
+}
+
+function zotero_viz_find_cache_file($display_name) {
+    $current = zotero_viz_cache_file($display_name);
+    if (file_exists($current)) {
+        return $current;
+    }
+
+    $legacy_names = array(
+        zotero_viz_legacy_cache_dir() . $display_name . '.json',
+        zotero_viz_legacy_cache_dir() . sanitize_file_name($display_name) . '.json',
+    );
+    foreach ($legacy_names as $legacy) {
+        if (file_exists($legacy)) {
+            return $legacy;
+        }
+    }
+
+    return $current;
+}
 
 // Create cache directory on activation
 register_activation_hook(__FILE__, 'zotero_viz_activate');
 function zotero_viz_activate() {
-    if (!file_exists(ZOTERO_VIZ_CACHE_DIR)) {
-        wp_mkdir_p(ZOTERO_VIZ_CACHE_DIR);
-    }
+    zotero_viz_ensure_cache_dir();
     
     // Schedule daily cache refresh
     if (!wp_next_scheduled('zotero_viz_daily_cache_refresh')) {
@@ -37,30 +88,258 @@ function zotero_viz_deactivate() {
     wp_clear_scheduled_hook('zotero_viz_daily_cache_refresh');
 }
 
+function zotero_viz_default_colors() {
+    return array(
+        'highlight' => '#ff0000',
+        'default' => '#cccccc',
+        'border' => '#999999',
+        'water' => '#e6f3ff'
+    );
+}
+
+function zotero_viz_sanitize_colors($colors) {
+    $defaults = zotero_viz_default_colors();
+    if (!is_array($colors)) {
+        return $defaults;
+    }
+    $clean = $defaults;
+    foreach ($defaults as $key => $default) {
+        if (empty($colors[$key]) || !is_string($colors[$key])) {
+            continue;
+        }
+        $hex = strtoupper(trim($colors[$key]));
+        if ($hex !== '' && $hex[0] !== '#') {
+            $hex = '#' . $hex;
+        }
+        if (preg_match('/^#[0-9A-F]{6}$/', $hex)) {
+            $clean[$key] = $hex;
+        }
+    }
+    return $clean;
+}
+
+function zotero_viz_encryption_key() {
+    $material = (defined('AUTH_KEY') ? AUTH_KEY : '') . '|zotero-viz-api-key';
+    return hash('sha256', $material, true);
+}
+
+function zotero_viz_encrypt_api_key($plain) {
+    if (!is_string($plain) || $plain === '' || !function_exists('openssl_encrypt')) {
+        return false;
+    }
+    $iv = random_bytes(16);
+    $cipher = openssl_encrypt($plain, 'AES-256-CBC', zotero_viz_encryption_key(), OPENSSL_RAW_DATA, $iv);
+    if ($cipher === false) {
+        return false;
+    }
+    return base64_encode($iv . $cipher);
+}
+
+function zotero_viz_decrypt_api_key($stored) {
+    if (!is_string($stored) || $stored === '' || !function_exists('openssl_decrypt')) {
+        return '';
+    }
+    $raw = base64_decode($stored, true);
+    if ($raw === false || strlen($raw) < 17) {
+        return '';
+    }
+    $iv = substr($raw, 0, 16);
+    $cipher = substr($raw, 16);
+    $plain = openssl_decrypt($cipher, 'AES-256-CBC', zotero_viz_encryption_key(), OPENSSL_RAW_DATA, $iv);
+    return is_string($plain) ? $plain : '';
+}
+
+function zotero_viz_sanitize_api_key($key) {
+    $key = trim((string) $key);
+    $key = preg_replace('/[^A-Za-z0-9]/', '', $key);
+    return is_string($key) ? $key : '';
+}
+
+function zotero_viz_has_api_key() {
+    $stored = get_option('zotero_viz_api_key', '');
+    return is_string($stored) && $stored !== '';
+}
+
+function zotero_viz_get_api_key() {
+    $stored = get_option('zotero_viz_api_key', '');
+    if (!is_string($stored) || $stored === '') {
+        return '';
+    }
+    return zotero_viz_decrypt_api_key($stored);
+}
+
+function zotero_viz_set_api_key($plain) {
+    $encrypted = zotero_viz_encrypt_api_key($plain);
+    if ($encrypted === false) {
+        return false;
+    }
+    return update_option('zotero_viz_api_key', $encrypted, false);
+}
+
+function zotero_viz_clear_api_key() {
+    delete_option('zotero_viz_api_key');
+}
+
+function zotero_viz_api_headers($api_key) {
+    $headers = array(
+        'Zotero-API-Version' => '3'
+    );
+    if (is_string($api_key) && $api_key !== '') {
+        $headers['Zotero-API-Key'] = $api_key;
+    }
+    return $headers;
+}
+
+function zotero_viz_redact_api_error_body($body, $api_key) {
+    $text = substr(wp_strip_all_tags((string) $body), 0, 200);
+    if (is_string($api_key) && $api_key !== '') {
+        $text = str_replace($api_key, '[redacted]', $text);
+    }
+    return $text;
+}
+
+function zotero_viz_validate_api_key($api_key) {
+    $response = wp_remote_get('https://api.zotero.org/keys/current', array(
+        'timeout' => 30,
+        'headers' => zotero_viz_api_headers($api_key)
+    ));
+
+    if (is_wp_error($response)) {
+        return new WP_Error(
+            'zotero_viz_api_key',
+            'Could not reach Zotero to validate the API key: ' . $response->get_error_message()
+        );
+    }
+
+    $code = wp_remote_retrieve_response_code($response);
+    if ($code === 403 || $code === 401) {
+        return new WP_Error(
+            'zotero_viz_api_key',
+            'That Zotero API key is invalid or does not have access. Settings were not saved.'
+        );
+    }
+    if ($code < 200 || $code >= 300) {
+        return new WP_Error(
+            'zotero_viz_api_key',
+            'Zotero rejected the API key (HTTP ' . intval($code) . '). Settings were not saved.'
+        );
+    }
+
+    return true;
+}
+
 // Parse Zotero URL to extract components
 function zotero_viz_parse_url($url) {
-    // Pattern: https://www.zotero.org/groups/{group_id}/{library_name}/collections/{collection_key}
-    // or: https://www.zotero.org/groups/{group_id}/{library_name}/library
-    
-    $pattern = '/https:\/\/www\.zotero\.org\/groups\/(\d+)\/([^\/]+)\/(library|collections\/([A-Z0-9]+))/';
-    
-    if (preg_match($pattern, $url, $matches)) {
-        $result = array(
-            'group_id' => $matches[1],
-            'library_name' => $matches[2],
-            'collection_key' => isset($matches[4]) ? $matches[4] : '',
-            'url' => $url
-        );
-        
-        return $result;
+    $url = trim(wp_unslash((string) $url));
+    if ($url === '') {
+        return false;
     }
-    
+
+    if (stripos($url, 'zotero.org') !== false && !preg_match('#^https?://#i', $url)) {
+        $url = 'https://' . ltrim($url, '/');
+    }
+
+    $path = wp_parse_url($url, PHP_URL_PATH);
+    if (!is_string($path) || $path === '') {
+        return false;
+    }
+
+    $path = trim($path, '/');
+    if (!preg_match('#(?:^|/)groups/(\d+)/([^/]+)(?:/(.*))?$#i', $path, $matches)) {
+        return false;
+    }
+
+    $group_id = $matches[1];
+    $library_name = rawurldecode($matches[2]);
+    $rest = isset($matches[3]) ? $matches[3] : '';
+    $collection_key = '';
+    if (preg_match('#collections/([A-Za-z0-9]+)#i', $rest, $collection_match)) {
+        $collection_key = $collection_match[1];
+    }
+
+    $canonical = 'https://www.zotero.org/groups/' . $group_id . '/' . rawurlencode($library_name);
+    if ($collection_key !== '') {
+        $canonical .= '/collections/' . $collection_key;
+    } else {
+        $canonical .= '/library';
+    }
+
+    return array(
+        'group_id' => $group_id,
+        'library_name' => $library_name,
+        'collection_key' => $collection_key,
+        'url' => $canonical
+    );
+}
+
+function zotero_viz_normalize_collection($collection) {
+    if (!is_array($collection)) {
+        return false;
+    }
+
+    $url = isset($collection['url']) ? trim(wp_unslash($collection['url'])) : '';
+    $display_name = isset($collection['display_name']) ? sanitize_text_field(wp_unslash($collection['display_name'])) : '';
+    $library_name = isset($collection['library_name']) ? sanitize_text_field(wp_unslash($collection['library_name'])) : '';
+    $group_id = isset($collection['group_id']) ? sanitize_text_field(wp_unslash($collection['group_id'])) : '';
+    $collection_key = isset($collection['collection_key']) ? sanitize_text_field(wp_unslash($collection['collection_key'])) : '';
+
+    if ($url !== '') {
+        $parsed = zotero_viz_parse_url($url);
+        if ($parsed) {
+            if ($group_id === '') {
+                $group_id = $parsed['group_id'];
+            }
+            if ($library_name === '') {
+                $library_name = $parsed['library_name'];
+            }
+            if ($collection_key === '') {
+                $collection_key = $parsed['collection_key'];
+            }
+            $url = $parsed['url'];
+        }
+    }
+
+    if ($group_id === '' || $library_name === '') {
+        return false;
+    }
+
+    if ($display_name === '') {
+        $display_name = $library_name;
+        $display_name .= ($collection_key !== '') ? '_collection' : '_full';
+    }
+
+    if ($url === '') {
+        $url = 'https://www.zotero.org/groups/' . rawurlencode($group_id) . '/' . rawurlencode($library_name);
+        $url .= ($collection_key !== '') ? '/collections/' . rawurlencode($collection_key) : '/library';
+    }
+
+    return array(
+        'url' => $url,
+        'display_name' => $display_name,
+        'library_name' => $library_name,
+        'group_id' => $group_id,
+        'collection_key' => $collection_key
+    );
+}
+
+function zotero_viz_collection_row_has_input($collection) {
+    if (!is_array($collection)) {
+        return false;
+    }
+    foreach (array('url', 'display_name', 'library_name', 'group_id', 'collection_key') as $field) {
+        if (!empty($collection[$field])) {
+            return true;
+        }
+    }
     return false;
 }
 
 // AJAX handler for URL parsing
 add_action('wp_ajax_zotero_viz_parse_url', 'zotero_viz_ajax_parse_url');
 function zotero_viz_ajax_parse_url() {
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error('Forbidden');
+    }
     check_ajax_referer('zotero_viz_parse', 'nonce');
     
     $url = sanitize_text_field($_POST['url']);
@@ -89,52 +368,80 @@ function zotero_viz_admin_menu() {
 
 // Admin page
 function zotero_viz_admin_page() {
+    if (!current_user_can('manage_options')) {
+        wp_die(esc_html__('You do not have permission to access this page.', 'zotero-viz'));
+    }
+
     // Handle form submissions
     if (isset($_POST['zotero_viz_save_settings'])) {
-        $collections = array();
-        if (isset($_POST['collections']) && is_array($_POST['collections'])) {
-            foreach ($_POST['collections'] as $collection) {
-                if (!empty($collection['url']) || (!empty($collection['library_name']) && !empty($collection['display_name']))) {
-                    // Parse URL if provided
-                    if (!empty($collection['url'])) {
-                        $parsed = zotero_viz_parse_url($collection['url']);
-                        if ($parsed) {
-                            // Add display name to parsed data
-                            $parsed['display_name'] = !empty($collection['display_name']) 
-                                ? sanitize_text_field($collection['display_name']) 
-                                : $parsed['library_name'];
-                            $collections[] = $parsed;
-                        }
-                    } else {
-                        // Use manual entry
-                        $collections[] = array(
-                            'library_name' => sanitize_text_field($collection['library_name']),
-                            'display_name' => sanitize_text_field($collection['display_name']),
-                            'group_id' => sanitize_text_field($collection['group_id']),
-                            'collection_key' => sanitize_text_field($collection['collection_key']),
-                            'url' => ''
-                        );
+        check_admin_referer('zotero_viz_admin');
+
+        $clear_key = !empty($_POST['zotero_viz_clear_api_key']);
+        $posted_key = isset($_POST['zotero_viz_api_key'])
+            ? zotero_viz_sanitize_api_key(wp_unslash($_POST['zotero_viz_api_key']))
+            : '';
+        $save_rejected = false;
+
+        if ($clear_key) {
+            zotero_viz_clear_api_key();
+        } elseif ($posted_key !== '') {
+            $validation = zotero_viz_validate_api_key($posted_key);
+            if (is_wp_error($validation)) {
+                $save_rejected = true;
+                echo '<div class="notice notice-error"><p>' . esc_html($validation->get_error_message()) . '</p></div>';
+            } elseif (!zotero_viz_set_api_key($posted_key)) {
+                $save_rejected = true;
+                echo '<div class="notice notice-error"><p>Could not store the Zotero API key. Settings were not saved.</p></div>';
+            }
+        }
+
+        if (!$save_rejected) {
+            $collections = array();
+            $skipped = 0;
+            if (isset($_POST['collections']) && is_array($_POST['collections'])) {
+                foreach ($_POST['collections'] as $collection) {
+                    $normalized = zotero_viz_normalize_collection($collection);
+                    if ($normalized) {
+                        $collections[] = $normalized;
+                    } elseif (zotero_viz_collection_row_has_input($collection)) {
+                        $skipped++;
                     }
                 }
             }
+            update_option('zotero_viz_collections', $collections);
+            $colors_in = isset($_POST['colors']) ? wp_unslash($_POST['colors']) : array();
+            update_option('zotero_viz_colors', zotero_viz_sanitize_colors($colors_in));
+            echo '<div class="notice notice-success"><p>Settings saved! ' . count($collections) . ' collection' . (count($collections) === 1 ? '' : 's') . ' stored.</p></div>';
+            if ($clear_key) {
+                echo '<div class="notice notice-warning"><p>Zotero API key cleared. Cache refresh will fail until a new key is saved.</p></div>';
+            } elseif ($posted_key !== '') {
+                echo '<div class="notice notice-success"><p>Zotero API key saved.</p></div>';
+            }
+            if ($skipped > 0) {
+                echo '<div class="notice notice-error"><p>' . intval($skipped) . ' row(s) were not saved. Each collection needs a valid Zotero group URL, or both Group ID and Library Name.</p></div>';
+            }
         }
-        update_option('zotero_viz_collections', $collections);
-        update_option('zotero_viz_colors', $_POST['colors']);
-        echo '<div class="notice notice-success"><p>Settings saved!</p></div>';
     }
     
     if (isset($_POST['zotero_viz_refresh_cache'])) {
-        zotero_viz_refresh_all_caches();
-        echo '<div class="notice notice-success"><p>Cache refreshed!</p></div>';
+        check_admin_referer('zotero_viz_admin');
+        $results = zotero_viz_refresh_all_caches();
+        if (empty($results)) {
+            echo '<div class="notice notice-warning"><p>No collections to cache. Add a collection on the Settings tab first.</p></div>';
+        } else {
+            foreach ($results as $result) {
+                $class = !empty($result['success']) ? 'notice-success' : 'notice-error';
+                echo '<div class="notice ' . $class . '"><p><strong>' . esc_html($result['display_name']) . ':</strong> ' . esc_html($result['message']) . '</p></div>';
+            }
+        }
     }
     
     $collections = get_option('zotero_viz_collections', array());
-    $colors = get_option('zotero_viz_colors', array(
-        'highlight' => '#ff0000',
-        'default' => '#cccccc',
-        'border' => '#999999',
-        'water' => '#e6f3ff'
-    ));
+    if (!is_array($collections)) {
+        $collections = array();
+    }
+    $colors = zotero_viz_sanitize_colors(get_option('zotero_viz_colors', array()));
+    $has_api_key = zotero_viz_has_api_key();
     
     // Get current tab
     $current_tab = isset($_GET['tab']) ? $_GET['tab'] : 'settings';
@@ -159,6 +466,31 @@ function zotero_viz_admin_page() {
             <?php if ($current_tab === 'settings'): ?>
                 <!-- Settings Tab -->
                 <form method="post">
+                    <?php wp_nonce_field('zotero_viz_admin'); ?>
+                    <h2>API Authentication</h2>
+                    <?php if (!$has_api_key): ?>
+                        <div class="notice notice-warning inline"><p>A Zotero API key is required to fetch library data. Create one at <a href="https://www.zotero.org/settings/keys" target="_blank" rel="noopener noreferrer">zotero.org/settings/keys</a> with access to your group libraries.</p></div>
+                    <?php endif; ?>
+                    <table class="form-table">
+                        <tr>
+                            <th scope="row"><label for="zotero_viz_api_key">Zotero API Key</label></th>
+                            <td>
+                                <input type="password" id="zotero_viz_api_key" name="zotero_viz_api_key" value="" autocomplete="new-password" class="regular-text" placeholder="<?php echo $has_api_key ? '••••••••••••••••' : ''; ?>" />
+                                <?php if ($has_api_key): ?>
+                                    <p class="description"><strong>API key is configured.</strong> Leave this field blank to keep the current key. The key is stored encrypted and is never shown again.</p>
+                                <?php else: ?>
+                                    <p class="description">Required for cache refresh. The key is used only on the server and is never sent to public pages.</p>
+                                <?php endif; ?>
+                                <p>
+                                    <label>
+                                        <input type="checkbox" name="zotero_viz_clear_api_key" value="1" />
+                                        Clear API key
+                                    </label>
+                                </p>
+                            </td>
+                        </tr>
+                    </table>
+
                     <h2>Zotero Collections</h2>
                     <p class="description">Enter a Zotero URL (e.g., https://www.zotero.org/groups/5872416/hl_standards/library) or manually specify the components.</p>
                     <table class="wp-list-table widefat fixed striped">
@@ -177,8 +509,8 @@ function zotero_viz_admin_page() {
                             <tr>
                                 <td><input type="text" name="collections[<?php echo $i; ?>][url]" value="<?php echo esc_attr($collection['url'] ?? ''); ?>" placeholder="https://www.zotero.org/groups/..." /></td>
                                 <td><input type="text" name="collections[<?php echo $i; ?>][display_name]" value="<?php echo esc_attr($collection['display_name'] ?? ''); ?>" placeholder="e.g., hl_standards_full" /></td>
-                                <td><input type="text" name="collections[<?php echo $i; ?>][library_name]" value="<?php echo esc_attr($collection['library_name']); ?>" /></td>
-                                <td><input type="text" name="collections[<?php echo $i; ?>][group_id]" value="<?php echo esc_attr($collection['group_id']); ?>" /></td>
+                                <td><input type="text" name="collections[<?php echo $i; ?>][library_name]" value="<?php echo esc_attr($collection['library_name'] ?? ''); ?>" /></td>
+                                <td><input type="text" name="collections[<?php echo $i; ?>][group_id]" value="<?php echo esc_attr($collection['group_id'] ?? ''); ?>" /></td>
                                 <td><input type="text" name="collections[<?php echo $i; ?>][collection_key]" value="<?php echo esc_attr($collection['collection_key'] ?? ''); ?>" /></td>
                                 <td><button type="button" class="button remove-collection">Remove</button></td>
                             </tr>
@@ -206,32 +538,32 @@ function zotero_viz_admin_page() {
                         <tr>
                             <th>Highlight Color</th>
                             <td>
-                                <input type="color" name="colors[highlight]" value="<?php echo esc_attr($colors['highlight']); ?>" style="margin-right: 10px;" class="color-picker" />
-                                <input type="text" name="colors[highlight]" value="<?php echo esc_attr($colors['highlight']); ?>" style="width: 80px; padding: 3px 6px; font-family: monospace; text-transform: uppercase;" class="hex-input" pattern="^#[0-9A-Fa-f]{6}$" placeholder="#FF0000" />
+                                <input type="color" value="<?php echo esc_attr($colors['highlight']); ?>" style="margin-right: 10px;" class="color-picker" />
+                                <input type="text" name="colors[highlight]" value="<?php echo esc_attr($colors['highlight']); ?>" style="width: 80px; padding: 3px 6px; font-family: monospace; text-transform: uppercase;" class="hex-input" placeholder="#FF0000" />
                                 <p class="description">Color for countries with citations (click color box or enter hex code)</p>
                             </td>
                         </tr>
                         <tr>
                             <th>Default Color</th>
                             <td>
-                                <input type="color" name="colors[default]" value="<?php echo esc_attr($colors['default']); ?>" style="margin-right: 10px;" class="color-picker" />
-                                <input type="text" name="colors[default]" value="<?php echo esc_attr($colors['default']); ?>" style="width: 80px; padding: 3px 6px; font-family: monospace; text-transform: uppercase;" class="hex-input" pattern="^#[0-9A-Fa-f]{6}$" placeholder="#FCFCFC" />
+                                <input type="color" value="<?php echo esc_attr($colors['default']); ?>" style="margin-right: 10px;" class="color-picker" />
+                                <input type="text" name="colors[default]" value="<?php echo esc_attr($colors['default']); ?>" style="width: 80px; padding: 3px 6px; font-family: monospace; text-transform: uppercase;" class="hex-input" placeholder="#FCFCFC" />
                                 <p class="description">Color for countries without citations (click color box or enter hex code)</p>
                             </td>
                         </tr>
                         <tr>
                             <th>Border Color</th>
                             <td>
-                                <input type="color" name="colors[border]" value="<?php echo esc_attr($colors['border']); ?>" style="margin-right: 10px;" class="color-picker" />
-                                <input type="text" name="colors[border]" value="<?php echo esc_attr($colors['border']); ?>" style="width: 80px; padding: 3px 6px; font-family: monospace; text-transform: uppercase;" class="hex-input" pattern="^#[0-9A-Fa-f]{6}$" placeholder="#999999" />
+                                <input type="color" value="<?php echo esc_attr($colors['border']); ?>" style="margin-right: 10px;" class="color-picker" />
+                                <input type="text" name="colors[border]" value="<?php echo esc_attr($colors['border']); ?>" style="width: 80px; padding: 3px 6px; font-family: monospace; text-transform: uppercase;" class="hex-input" placeholder="#999999" />
                                 <p class="description">Country border color (click color box or enter hex code)</p>
                             </td>
                         </tr>
                         <tr>
                             <th>Water Color</th>
                             <td>
-                                <input type="color" name="colors[water]" value="<?php echo esc_attr($colors['water']); ?>" style="margin-right: 10px;" class="color-picker" />
-                                <input type="text" name="colors[water]" value="<?php echo esc_attr($colors['water']); ?>" style="width: 80px; padding: 3px 6px; font-family: monospace; text-transform: uppercase;" class="hex-input" pattern="^#[0-9A-Fa-f]{6}$" placeholder="#E6F3FF" />
+                                <input type="color" value="<?php echo esc_attr($colors['water']); ?>" style="margin-right: 10px;" class="color-picker" />
+                                <input type="text" name="colors[water]" value="<?php echo esc_attr($colors['water']); ?>" style="width: 80px; padding: 3px 6px; font-family: monospace; text-transform: uppercase;" class="hex-input" placeholder="#E6F3FF" />
                                 <p class="description">Ocean/water background color (click color box or enter hex code)</p>
                             </td>
                         </tr>
@@ -246,7 +578,21 @@ function zotero_viz_admin_page() {
             <?php elseif ($current_tab === 'cache'): ?>
                 <!-- Cache Status Tab -->
                 <h2>Cache Status</h2>
-                <p class="description">Monitor the status of your cached Zotero data. Cache refreshes automatically daily, or click "Refresh Cache Now" on the Settings tab.</p>
+                <p class="description">Monitor the status of your cached Zotero data. Cache refreshes automatically daily, or click "Refresh Cache Now" below.</p>
+                <p class="description"><strong>Cache directory:</strong> <code><?php echo esc_html(zotero_viz_cache_dir()); ?></code>
+                    <?php if (zotero_viz_ensure_cache_dir()): ?>
+                        — writable
+                    <?php else: ?>
+                        — <span style="color:#b32d2e;">not writable. WordPress cannot save cache files here.</span>
+                    <?php endif; ?>
+                </p>
+                <?php if (!$has_api_key): ?>
+                    <div class="notice notice-warning inline"><p>No Zotero API key is configured. Cache refresh will fail until you add one on the Settings tab.</p></div>
+                <?php endif; ?>
+                <form method="post" style="margin: 12px 0 16px;">
+                    <?php wp_nonce_field('zotero_viz_admin'); ?>
+                    <input type="submit" name="zotero_viz_refresh_cache" class="button button-secondary" value="Refresh Cache Now" />
+                </form>
                 
                 <table class="wp-list-table widefat fixed striped">
                     <thead>
@@ -267,7 +613,7 @@ function zotero_viz_admin_page() {
                         } else {
                             foreach ($collections as $collection) {
                                 $display_name = $collection['display_name'] ?? $collection['library_name'];
-                                $cache_file = ZOTERO_VIZ_CACHE_DIR . $display_name . '.json';
+                                $cache_file = zotero_viz_find_cache_file($display_name);
                                 if (file_exists($cache_file)) {
                                     $cache_data = json_decode(file_get_contents($cache_file), true);
                                     $type = empty($collection['collection_key']) ? 'Full Library' : 'Collection';
@@ -358,6 +704,8 @@ function zotero_viz_admin_page() {
                             }
                             $displayName.val(suggestedName);
                         }
+                    } else {
+                        window.alert('Could not parse that Zotero URL. Use a group library URL, or fill Group ID and Library Name manually.');
                     }
                 });
             }
@@ -699,56 +1047,103 @@ function zotero_viz_render_readme() {
 
 // Zotero API functions
 function zotero_viz_fetch_collection_items($group_id, $collection_key = null) {
+    $api_key = zotero_viz_get_api_key();
+    if ($api_key === '') {
+        return new WP_Error(
+            'zotero_viz_fetch',
+            'Zotero API key is required. Add one on the Settings tab.'
+        );
+    }
+
     $items = array();
     $start = 0;
     $limit = 100;
+    $max_retries = 3;
     
-    // Determine API endpoint
+    $group_id = rawurlencode($group_id);
     if ($collection_key) {
-        // Specific collection
-        $base_url = "https://api.zotero.org/groups/{$group_id}/collections/{$collection_key}/items";
+        $base_url = "https://api.zotero.org/groups/{$group_id}/collections/" . rawurlencode($collection_key) . "/items/top";
     } else {
-        // Entire library (excluding trash)
-        $base_url = "https://api.zotero.org/groups/{$group_id}/items";
+        $base_url = "https://api.zotero.org/groups/{$group_id}/items/top";
+    }
+    
+    if (function_exists('set_time_limit')) {
+        @set_time_limit(300);
     }
     
     do {
         $url = $base_url . "?format=json&limit={$limit}&start={$start}";
+        $data = null;
+        $response = null;
+        $last_error = '';
         
-        // Add parameter to exclude trashed items when fetching entire library
-        if (!$collection_key) {
-            $url .= "&itemType=-attachment&trashedItemsOnly=0";
+        for ($attempt = 1; $attempt <= $max_retries; $attempt++) {
+            if ($start > 0 || $attempt > 1) {
+                usleep(200000);
+            }
+            
+            $response = wp_remote_get($url, array(
+                'timeout' => 60,
+                'headers' => zotero_viz_api_headers($api_key)
+            ));
+            
+            if (is_wp_error($response)) {
+                $last_error = $response->get_error_message();
+                continue;
+            }
+            
+            $code = wp_remote_retrieve_response_code($response);
+            if ($code == 429) {
+                $last_error = 'Zotero API rate limit (HTTP 429)';
+                sleep(3);
+                continue;
+            }
+            if ($code == 401 || $code == 403) {
+                return new WP_Error(
+                    'zotero_viz_fetch',
+                    'Zotero API key is invalid or does not have access to this library (HTTP ' . intval($code) . ')'
+                );
+            }
+            if ($code < 200 || $code >= 300) {
+                $body_preview = zotero_viz_redact_api_error_body(wp_remote_retrieve_body($response), $api_key);
+                $last_error = 'Zotero API HTTP ' . $code . ': ' . $body_preview;
+                continue;
+            }
+            
+            $decoded = json_decode(wp_remote_retrieve_body($response), true);
+            if (!is_array($decoded)) {
+                $last_error = 'Invalid JSON from Zotero API';
+                continue;
+            }
+            if (isset($decoded['error']) && !isset($decoded[0])) {
+                $last_error = 'Zotero API error: ' . $decoded['error'];
+                continue;
+            }
+            
+            $data = $decoded;
+            break;
         }
         
-        $response = wp_remote_get($url, array(
-            'timeout' => 30,
-            'headers' => array(
-                'Zotero-API-Version' => '3'
-            )
-        ));
-        
-        if (is_wp_error($response)) {
-            return false;
+        if ($data === null) {
+            return new WP_Error('zotero_viz_fetch', $last_error ?: 'Failed to fetch items from Zotero');
         }
-        
-        $body = wp_remote_retrieve_body($response);
-        $data = json_decode($body, true);
         
         if (empty($data)) {
             break;
         }
         
-        // Filter out attachments and notes
         foreach ($data as $item) {
-            if (isset($item['data']['itemType']) && 
-                !in_array($item['data']['itemType'], array('attachment', 'note'))) {
+            if (!is_array($item)) {
+                continue;
+            }
+            if (isset($item['data']['itemType']) &&
+                !in_array($item['data']['itemType'], array('attachment', 'note'), true)) {
                 $items[] = $item;
             }
         }
         
         $start += $limit;
         
-        // Check if we have more results
         $total_results = wp_remote_retrieve_header($response, 'total-results');
         if ($total_results && $start >= intval($total_results)) {
             break;
@@ -880,7 +1275,7 @@ function zotero_viz_stats_shortcode($atts) {
     }
     
     // Use display name for cache file lookup
-    $cache_file = ZOTERO_VIZ_CACHE_DIR . $atts['library'] . '.json';
+    $cache_file = zotero_viz_find_cache_file($atts['library']);
     if (!file_exists($cache_file)) {
         return '<p>Library data not found. Please refresh cache. Looking for: ' . esc_html($atts['library']) . '</p>';
     }
@@ -997,41 +1392,86 @@ function zotero_viz_stats_shortcode($atts) {
 
 // Cache refresh function
 function zotero_viz_refresh_all_caches() {
+    $results = array();
     $collections = get_option('zotero_viz_collections', array());
     
+    if (!zotero_viz_ensure_cache_dir()) {
+        return array(
+            array(
+                'display_name' => '(all)',
+                'success' => false,
+                'message' => 'Cache directory is not writable: ' . zotero_viz_cache_dir()
+            )
+        );
+    }
+    
     foreach ($collections as $collection) {
-        // Skip if no group_id or library_name
+        $display_name = !empty($collection['display_name']) ? $collection['display_name'] : ($collection['library_name'] ?? '');
+        if ($display_name === '') {
+            $display_name = '(unnamed)';
+        }
+        
         if (empty($collection['group_id']) || empty($collection['library_name'])) {
+            $results[] = array(
+                'display_name' => $display_name,
+                'success' => false,
+                'message' => 'Skipped: missing Group ID or Library Name'
+            );
             continue;
         }
         
-        // Get display name, fallback to library name if not set
-        $display_name = !empty($collection['display_name']) ? $collection['display_name'] : $collection['library_name'];
-        
-        // Fetch items - collection_key is optional
         $collection_key = !empty($collection['collection_key']) ? $collection['collection_key'] : null;
         $items = zotero_viz_fetch_collection_items($collection['group_id'], $collection_key);
         
-        if ($items !== false) {
-            $map_data = zotero_viz_process_map_data($items);
-            $timeline_data = zotero_viz_process_timeline_data($items);
-            
-            $cache_data = array(
-                'map' => $map_data,
-                'timeline' => $timeline_data,
-                'updated' => time(),
-                'item_count' => count($items),
-                'collection_key' => $collection_key,
-                'library_name' => $collection['library_name'], // Store original library name
+        if (is_wp_error($items)) {
+            $results[] = array(
                 'display_name' => $display_name,
-                'group_id' => $collection['group_id']
+                'success' => false,
+                'message' => $items->get_error_message()
             );
-            
-            // Use display name for cache file
-            $cache_file = ZOTERO_VIZ_CACHE_DIR . $display_name . '.json';
-            file_put_contents($cache_file, json_encode($cache_data));
+            continue;
         }
+        
+        $cache_data = array(
+            'map' => zotero_viz_process_map_data($items),
+            'timeline' => zotero_viz_process_timeline_data($items),
+            'updated' => time(),
+            'item_count' => count($items),
+            'collection_key' => $collection_key,
+            'library_name' => $collection['library_name'],
+            'display_name' => $display_name,
+            'group_id' => $collection['group_id']
+        );
+        
+        $cache_file = zotero_viz_cache_file($display_name);
+        $json = wp_json_encode($cache_data);
+        if ($json === false) {
+            $results[] = array(
+                'display_name' => $display_name,
+                'success' => false,
+                'message' => 'Failed to encode cache JSON'
+            );
+            continue;
+        }
+        
+        $written = file_put_contents($cache_file, $json, LOCK_EX);
+        if ($written === false) {
+            $results[] = array(
+                'display_name' => $display_name,
+                'success' => false,
+                'message' => 'Failed to write cache file: ' . $cache_file
+            );
+            continue;
+        }
+        
+        $results[] = array(
+            'display_name' => $display_name,
+            'success' => true,
+            'message' => count($items) . ' items cached'
+        );
     }
+    
+    return $results;
 }
 
 // Daily cache refresh
@@ -1076,12 +1516,7 @@ function zotero_viz_enqueue_scripts() {
         wp_enqueue_style('zotero-viz', ZOTERO_VIZ_PLUGIN_URL . 'assets/zotero-viz.css', array(), ZOTERO_VIZ_VERSION);
         
         // Pass data to JavaScript
-        $colors = get_option('zotero_viz_colors', array(
-            'highlight' => '#ff0000',
-            'default' => '#cccccc',
-            'border' => '#999999',
-            'water' => '#e6f3ff'
-        ));
+        $colors = zotero_viz_sanitize_colors(get_option('zotero_viz_colors', array()));
         
         wp_localize_script('zotero-viz', 'zoteroVizData', array(
             'pluginUrl' => ZOTERO_VIZ_PLUGIN_URL,
@@ -1104,7 +1539,7 @@ function zotero_viz_map_shortcode($atts) {
     }
     
     // Use display name for cache file lookup
-    $cache_file = ZOTERO_VIZ_CACHE_DIR . $atts['library'] . '.json';
+    $cache_file = zotero_viz_find_cache_file($atts['library']);
     if (!file_exists($cache_file)) {
         return '<p>Library data not found. Please refresh cache. Looking for: ' . esc_html($atts['library']) . '</p>';
     }
@@ -1153,7 +1588,7 @@ function zotero_viz_timeline_shortcode($atts) {
     }
     
     // Use display name for cache file lookup
-    $cache_file = ZOTERO_VIZ_CACHE_DIR . $atts['library'] . '.json';
+    $cache_file = zotero_viz_find_cache_file($atts['library']);
     if (!file_exists($cache_file)) {
         return '<p>Library data not found. Please refresh cache. Looking for: ' . esc_html($atts['library']) . '</p>';
     }
