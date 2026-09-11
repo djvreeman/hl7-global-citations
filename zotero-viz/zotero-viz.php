@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Zotero Visualizations
  * Description: Display interactive world maps and bar charts from Zotero collections
- * Version: 1.0.11
+ * Version: 1.0.15
  * Author: Daniel J. Vreeman, PT, DPT, MS, FACMI, FIAHSI
  * License: GPL v2 or later
  */
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('ZOTERO_VIZ_VERSION', '1.0.11'); // Increment this to force asset/cache refresh
+define('ZOTERO_VIZ_VERSION', '1.0.15'); // Increment this to force asset/cache refresh
 define('ZOTERO_VIZ_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ZOTERO_VIZ_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -352,6 +352,91 @@ function zotero_viz_ajax_parse_url() {
     }
 }
 
+add_action('wp_ajax_zotero_viz_refresh_list', 'zotero_viz_ajax_refresh_list');
+function zotero_viz_ajax_refresh_list() {
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error('Forbidden');
+    }
+    check_ajax_referer('zotero_viz_refresh', 'nonce');
+
+    if (!zotero_viz_has_api_key()) {
+        wp_send_json_error('A Zotero API key is required. Add one on the Settings tab.');
+    }
+    if (!zotero_viz_ensure_cache_dir()) {
+        wp_send_json_error('Cache directory is not writable: ' . zotero_viz_cache_dir());
+    }
+
+    $collections = get_option('zotero_viz_collections', array());
+    if (!is_array($collections) || empty($collections)) {
+        wp_send_json_error('No collections to cache. Add a collection on the Settings tab first.');
+    }
+
+    $libraries = array();
+    foreach ($collections as $index => $collection) {
+        $libraries[] = array(
+            'index' => (int) $index,
+            'display_name' => zotero_viz_collection_display_name($collection),
+            'library_name' => isset($collection['library_name']) ? (string) $collection['library_name'] : ''
+        );
+    }
+
+    wp_send_json_success(array(
+        'total' => count($libraries),
+        'libraries' => $libraries
+    ));
+}
+
+add_action('wp_ajax_zotero_viz_refresh_one', 'zotero_viz_ajax_refresh_one');
+function zotero_viz_ajax_refresh_one() {
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error('Forbidden');
+    }
+    check_ajax_referer('zotero_viz_refresh', 'nonce');
+
+    if (!zotero_viz_has_api_key()) {
+        wp_send_json_error('A Zotero API key is required. Add one on the Settings tab.');
+    }
+    if (!zotero_viz_ensure_cache_dir()) {
+        wp_send_json_error('Cache directory is not writable: ' . zotero_viz_cache_dir());
+    }
+
+    $index = isset($_POST['index']) ? intval($_POST['index']) : -1;
+    $collections = get_option('zotero_viz_collections', array());
+    if (!is_array($collections) || !isset($collections[$index])) {
+        wp_send_json_error('Unknown library index.');
+    }
+
+    wp_send_json_success(array(
+        'index' => $index,
+        'total' => count($collections),
+        'result' => zotero_viz_refresh_collection($collections[$index])
+    ));
+}
+
+add_action('admin_enqueue_scripts', 'zotero_viz_admin_enqueue');
+function zotero_viz_admin_enqueue($hook) {
+    if ($hook !== 'toplevel_page_zotero-viz') {
+        return;
+    }
+    wp_enqueue_style(
+        'zotero-viz-admin',
+        ZOTERO_VIZ_PLUGIN_URL . 'assets/zotero-viz-admin.css',
+        array(),
+        ZOTERO_VIZ_VERSION
+    );
+    wp_enqueue_script(
+        'zotero-viz-admin',
+        ZOTERO_VIZ_PLUGIN_URL . 'assets/zotero-viz-admin.js',
+        array('jquery'),
+        ZOTERO_VIZ_VERSION,
+        true
+    );
+    wp_localize_script('zotero-viz-admin', 'zoteroVizAdmin', array(
+        'ajaxUrl' => admin_url('admin-ajax.php'),
+        'nonce' => wp_create_nonce('zotero_viz_refresh')
+    ));
+}
+
 // Add admin menu
 add_action('admin_menu', 'zotero_viz_admin_menu');
 function zotero_viz_admin_menu() {
@@ -435,6 +520,19 @@ function zotero_viz_admin_page() {
             }
         }
     }
+
+    if (isset($_POST['zotero_viz_refresh_one_cache'])) {
+        check_admin_referer('zotero_viz_admin');
+        $index = isset($_POST['collection_index']) ? intval($_POST['collection_index']) : -1;
+        $collections = get_option('zotero_viz_collections', array());
+        if (!is_array($collections) || !isset($collections[$index])) {
+            echo '<div class="notice notice-error"><p>Unknown library. Refresh the page and try again.</p></div>';
+        } else {
+            $result = zotero_viz_refresh_collection($collections[$index]);
+            $class = !empty($result['success']) ? 'notice-success' : 'notice-error';
+            echo '<div class="notice ' . $class . '"><p><strong>' . esc_html($result['display_name']) . ':</strong> ' . esc_html($result['message']) . '</p></div>';
+        }
+    }
     
     $collections = get_option('zotero_viz_collections', array());
     if (!is_array($collections)) {
@@ -448,6 +546,21 @@ function zotero_viz_admin_page() {
     ?>
     <div class="wrap">
         <h1>Zotero Visualizations</h1>
+
+        <div id="zotero-viz-refresh-progress" class="zotero-viz-refresh-progress" hidden>
+            <p class="zotero-viz-refresh-heading">
+                <span class="zotero-viz-refresh-heading-main">
+                    <span class="spinner is-active"></span>
+                    <span id="zotero-viz-refresh-label">Preparing cache refresh…</span>
+                </span>
+                <button type="button" class="button-link zotero-viz-refresh-dismiss" id="zotero-viz-refresh-dismiss" hidden>Dismiss</button>
+            </p>
+            <div class="zotero-viz-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="zotero-viz-progressbar">
+                <div class="zotero-viz-progress-bar" id="zotero-viz-progress-bar"></div>
+            </div>
+            <p class="zotero-viz-refresh-count" id="zotero-viz-refresh-count"></p>
+            <ul class="zotero-viz-refresh-libraries" id="zotero-viz-refresh-libraries"></ul>
+        </div>
         
         <!-- Tab Navigation -->
         <nav class="nav-tab-wrapper">
@@ -571,14 +684,14 @@ function zotero_viz_admin_page() {
                     
                     <p class="submit">
                         <input type="submit" name="zotero_viz_save_settings" class="button-primary" value="Save Settings" />
-                        <input type="submit" name="zotero_viz_refresh_cache" class="button-secondary" value="Refresh Cache Now" />
+                        <button type="button" class="button button-secondary zotero-viz-refresh-cache">Refresh Cache Now</button>
                     </p>
                 </form>
                 
             <?php elseif ($current_tab === 'cache'): ?>
                 <!-- Cache Status Tab -->
                 <h2>Cache Status</h2>
-                <p class="description">Monitor the status of your cached Zotero data. Cache refreshes automatically daily, or click "Refresh Cache Now" below.</p>
+                <p class="description">Monitor the status of your cached Zotero data. Cache refreshes automatically daily, or click "Refresh Cache Now" to update all libraries. Use <strong>Refresh</strong> on a row to update a single library.</p>
                 <p class="description"><strong>Cache directory:</strong> <code><?php echo esc_html(zotero_viz_cache_dir()); ?></code>
                     <?php if (zotero_viz_ensure_cache_dir()): ?>
                         — writable
@@ -589,10 +702,15 @@ function zotero_viz_admin_page() {
                 <?php if (!$has_api_key): ?>
                     <div class="notice notice-warning inline"><p>No Zotero API key is configured. Cache refresh will fail until you add one on the Settings tab.</p></div>
                 <?php endif; ?>
-                <form method="post" style="margin: 12px 0 16px;">
-                    <?php wp_nonce_field('zotero_viz_admin'); ?>
-                    <input type="submit" name="zotero_viz_refresh_cache" class="button button-secondary" value="Refresh Cache Now" />
-                </form>
+                <p>
+                    <button type="button" class="button button-secondary zotero-viz-refresh-cache">Refresh Cache Now</button>
+                    <noscript>
+                        <form method="post" style="display:inline;">
+                            <?php wp_nonce_field('zotero_viz_admin'); ?>
+                            <input type="submit" name="zotero_viz_refresh_cache" class="button button-secondary" value="Refresh Cache Now (no JavaScript)" />
+                        </form>
+                    </noscript>
+                </p>
                 
                 <table class="wp-list-table widefat fixed striped">
                     <thead>
@@ -604,16 +722,23 @@ function zotero_viz_admin_page() {
                             <th>Countries Tagged</th>
                             <th>Years Covered</th>
                             <th>Last Updated</th>
+                            <th style="width: 110px;">Actions</th>
                         </tr>
                     </thead>
-                    <tbody>
+                    <tbody id="zotero-viz-cache-rows">
                         <?php
                         if (empty($collections)) {
-                            echo '<tr><td colspan="7"><em>No collections configured yet. Go to the Settings tab to add collections.</em></td></tr>';
+                            echo '<tr><td colspan="8"><em>No collections configured yet. Go to the Settings tab to add collections.</em></td></tr>';
                         } else {
-                            foreach ($collections as $collection) {
+                            foreach ($collections as $i => $collection) {
                                 $display_name = $collection['display_name'] ?? $collection['library_name'];
                                 $cache_file = zotero_viz_find_cache_file($display_name);
+                                $refresh_button = '<button type="button" class="button button-small zotero-viz-refresh-one" data-index="' . (int) $i . '" data-display-name="' . esc_attr($display_name) . '">Refresh</button>'
+                                    . '<noscript><form method="post" style="display:inline;margin-left:4px;">'
+                                    . wp_nonce_field('zotero_viz_admin', '_wpnonce', true, false)
+                                    . '<input type="hidden" name="collection_index" value="' . (int) $i . '" />'
+                                    . '<input type="submit" name="zotero_viz_refresh_one_cache" class="button button-small" value="Refresh" />'
+                                    . '</form></noscript>';
                                 if (file_exists($cache_file)) {
                                     $cache_data = json_decode(file_get_contents($cache_file), true);
                                     $type = empty($collection['collection_key']) ? 'Full Library' : 'Collection';
@@ -623,7 +748,7 @@ function zotero_viz_admin_page() {
                                     $updated = human_time_diff($cache_data['updated']) . ' ago';
                                     $item_count = isset($cache_data['item_count']) ? $cache_data['item_count'] : 'Unknown';
                                     
-                                    echo '<tr>';
+                                    echo '<tr data-display-name="' . esc_attr($display_name) . '" data-index="' . (int) $i . '">';
                                     echo '<td><strong>' . esc_html($display_name) . '</strong></td>';
                                     echo '<td>' . esc_html($collection['library_name']) . '</td>';
                                     echo '<td>' . esc_html($type) . '</td>';
@@ -631,12 +756,14 @@ function zotero_viz_admin_page() {
                                     echo '<td>' . esc_html($countries) . '</td>';
                                     echo '<td>' . esc_html($year_range) . '</td>';
                                     echo '<td>' . esc_html($updated) . '</td>';
+                                    echo '<td class="zotero-viz-cache-actions">' . $refresh_button . '</td>';
                                     echo '</tr>';
                                 } else {
-                                    echo '<tr>';
+                                    echo '<tr data-display-name="' . esc_attr($display_name) . '" data-index="' . (int) $i . '">';
                                     echo '<td><strong>' . esc_html($display_name) . '</strong></td>';
                                     echo '<td>' . esc_html($collection['library_name']) . '</td>';
                                     echo '<td colspan="5"><em>Not cached yet - refresh cache to populate</em></td>';
+                                    echo '<td class="zotero-viz-cache-actions">' . $refresh_button . '</td>';
                                     echo '</tr>';
                                 }
                             }
@@ -1154,79 +1281,115 @@ function zotero_viz_fetch_collection_items($group_id, $collection_key = null) {
     return $items;
 }
 
+function zotero_viz_country_key($name) {
+    $name = trim((string) $name);
+    if ($name === '') {
+        return '';
+    }
+    if (function_exists('mb_strtolower')) {
+        return mb_strtolower($name, 'UTF-8');
+    }
+    return strtolower($name);
+}
+
+function zotero_viz_valid_countries() {
+    return array(
+        'United States', 'Canada', 'Mexico',
+        'Guatemala', 'Belize', 'El Salvador', 'Honduras', 'Nicaragua', 'Costa Rica', 'Panama',
+        'Cuba', 'Haiti', 'Dominican Republic', 'Jamaica', 'Trinidad and Tobago', 'Barbados',
+        'Saint Lucia', 'Grenada', 'Saint Vincent and the Grenadines', 'Antigua and Barbuda',
+        'Dominica', 'Saint Kitts and Nevis',
+        'Brazil', 'Argentina', 'Chile', 'Peru', 'Colombia', 'Venezuela', 'Ecuador', 'Bolivia',
+        'Paraguay', 'Uruguay', 'Guyana', 'Suriname',
+        'United Kingdom', 'France', 'Germany', 'Spain', 'Italy', 'Poland', 'Netherlands',
+        'Belgium', 'Czech Republic', 'Greece', 'Portugal', 'Sweden', 'Hungary', 'Austria',
+        'Belarus', 'Switzerland', 'Bulgaria', 'Denmark', 'Finland', 'Slovakia', 'Norway',
+        'Ireland', 'Croatia', 'Moldova', 'Bosnia and Herzegovina', 'Albania', 'Lithuania',
+        'Slovenia', 'Latvia', 'Estonia', 'North Macedonia', 'Serbia', 'Montenegro',
+        'Luxembourg', 'Malta', 'Iceland', 'Andorra', 'Monaco', 'Liechtenstein', 'San Marino',
+        'Romania', 'Ukraine', 'Cyprus', 'Kosovo',
+        'China', 'Japan', 'India', 'South Korea', 'Indonesia', 'Thailand', 'Vietnam',
+        'Philippines', 'Malaysia', 'Singapore', 'Bangladesh', 'Pakistan', 'Afghanistan',
+        'Nepal', 'Sri Lanka', 'Myanmar', 'Cambodia', 'Laos', 'Mongolia', 'Bhutan',
+        'Timor-Leste', 'Brunei', 'Maldives', 'North Korea',
+        'Turkey', 'Saudi Arabia', 'Israel', 'United Arab Emirates', 'Iran', 'Iraq', 'Jordan',
+        'Lebanon', 'Kuwait', 'Qatar', 'Bahrain', 'Oman', 'Yemen', 'Syria', 'Palestine',
+        'Kazakhstan', 'Uzbekistan', 'Turkmenistan', 'Tajikistan', 'Kyrgyzstan',
+        'Azerbaijan', 'Armenia', 'Georgia',
+        'South Africa', 'Nigeria', 'Kenya', 'Egypt', 'Morocco', 'Ethiopia', 'Ghana',
+        'Tanzania', 'Algeria', 'Sudan', 'Uganda', 'Mozambique', 'Madagascar', 'Cameroon',
+        'Angola', 'Niger', 'Burkina Faso', 'Mali', 'Malawi', 'Zambia', 'Senegal',
+        'Somalia', 'Chad', 'Zimbabwe', 'Guinea', 'Rwanda', 'Benin', 'Burundi', 'Tunisia',
+        'South Sudan', 'Togo', 'Sierra Leone', 'Libya', 'Liberia', 'Mauritania',
+        'Central African Republic', 'Eritrea', 'Gambia', 'Botswana', 'Namibia', 'Gabon',
+        'Lesotho', 'Guinea-Bissau', 'Equatorial Guinea', 'Mauritius', 'Eswatini',
+        'Djibouti', 'Comoros', 'Cape Verde', 'Sao Tome and Principe', 'Seychelles',
+        'Congo', 'Democratic Republic of the Congo', "Cote d'Ivoire",
+        'Australia', 'New Zealand', 'Papua New Guinea', 'Fiji', 'Solomon Islands',
+        'Vanuatu', 'Samoa', 'Kiribati', 'Micronesia', 'Tonga', 'Palau', 'Marshall Islands',
+        'Tuvalu', 'Nauru',
+        'Russia', 'Greenland'
+    );
+}
+
+function zotero_viz_country_alias_map() {
+    static $map = null;
+    if ($map !== null) {
+        return $map;
+    }
+
+    $map = array();
+    foreach (zotero_viz_valid_countries() as $canonical) {
+        $map[zotero_viz_country_key($canonical)] = $canonical;
+    }
+
+    $file = ZOTERO_VIZ_PLUGIN_DIR . 'assets/country-mappings.json';
+    if (is_readable($file)) {
+        $aliases = json_decode(file_get_contents($file), true);
+        if (is_array($aliases)) {
+            foreach ($aliases as $from => $to) {
+                if (!is_string($from) || !is_string($to) || $to === '') {
+                    continue;
+                }
+                $map[zotero_viz_country_key($from)] = $to;
+            }
+        }
+    }
+
+    return $map;
+}
+
+function zotero_viz_canonical_country($tag) {
+    $key = zotero_viz_country_key($tag);
+    if ($key === '') {
+        return '';
+    }
+    $map = zotero_viz_country_alias_map();
+    if (!isset($map[$key])) {
+        return '';
+    }
+    $canonical = $map[$key];
+    return in_array($canonical, zotero_viz_valid_countries(), true) ? $canonical : '';
+}
+
 // Process citations for map data
 function zotero_viz_process_map_data($items) {
     $country_counts = array();
     
     foreach ($items as $item) {
-        if (isset($item['data']['tags'])) {
-            foreach ($item['data']['tags'] as $tag) {
-                $country = $tag['tag'];
-                // Comprehensive list of World Bank country names
-                $valid_countries = array(
-                    // North America
-                    'United States', 'Canada', 'Mexico',
-                    
-                    // Central America & Caribbean
-                    'Guatemala', 'Belize', 'El Salvador', 'Honduras', 'Nicaragua', 'Costa Rica', 'Panama',
-                    'Cuba', 'Haiti', 'Dominican Republic', 'Jamaica', 'Trinidad and Tobago', 'Barbados',
-                    'Saint Lucia', 'Grenada', 'Saint Vincent and the Grenadines', 'Antigua and Barbuda',
-                    'Dominica', 'Saint Kitts and Nevis',
-                    
-                    // South America
-                    'Brazil', 'Argentina', 'Chile', 'Peru', 'Colombia', 'Venezuela', 'Ecuador', 'Bolivia',
-                    'Paraguay', 'Uruguay', 'Guyana', 'Suriname',
-                    
-                    // Europe
-                    'United Kingdom', 'France', 'Germany', 'Spain', 'Italy', 'Poland', 'Netherlands',
-                    'Belgium', 'Czech Republic', 'Greece', 'Portugal', 'Sweden', 'Hungary', 'Austria',
-                    'Belarus', 'Switzerland', 'Bulgaria', 'Denmark', 'Finland', 'Slovakia', 'Norway',
-                    'Ireland', 'Croatia', 'Moldova', 'Bosnia and Herzegovina', 'Albania', 'Lithuania',
-                    'Slovenia', 'Latvia', 'Estonia', 'North Macedonia', 'Serbia', 'Montenegro',
-                    'Luxembourg', 'Malta', 'Iceland', 'Andorra', 'Monaco', 'Liechtenstein', 'San Marino',
-                    'Romania', 'Ukraine', 'Cyprus', 'Kosovo',
-                    
-                    // Asia
-                    'China', 'Japan', 'India', 'South Korea', 'Indonesia', 'Thailand', 'Vietnam',
-                    'Philippines', 'Malaysia', 'Singapore', 'Bangladesh', 'Pakistan', 'Afghanistan',
-                    'Nepal', 'Sri Lanka', 'Myanmar', 'Cambodia', 'Laos', 'Mongolia', 'Bhutan',
-                    'Timor-Leste', 'Brunei', 'Maldives', 'North Korea',
-                    
-                    // Middle East
-                    'Turkey', 'Saudi Arabia', 'Israel', 'United Arab Emirates', 'Iran', 'Iraq', 'Jordan',
-                    'Lebanon', 'Kuwait', 'Qatar', 'Bahrain', 'Oman', 'Yemen', 'Syria', 'Palestine',
-                    
-                    // Central Asia
-                    'Kazakhstan', 'Uzbekistan', 'Turkmenistan', 'Tajikistan', 'Kyrgyzstan',
-                    'Azerbaijan', 'Armenia', 'Georgia',
-                    
-                    // Africa
-                    'South Africa', 'Nigeria', 'Kenya', 'Egypt', 'Morocco', 'Ethiopia', 'Ghana',
-                    'Tanzania', 'Algeria', 'Sudan', 'Uganda', 'Mozambique', 'Madagascar', 'Cameroon',
-                    'Angola', 'Niger', 'Burkina Faso', 'Mali', 'Malawi', 'Zambia', 'Senegal',
-                    'Somalia', 'Chad', 'Zimbabwe', 'Guinea', 'Rwanda', 'Benin', 'Burundi', 'Tunisia',
-                    'South Sudan', 'Togo', 'Sierra Leone', 'Libya', 'Liberia', 'Mauritania',
-                    'Central African Republic', 'Eritrea', 'Gambia', 'Botswana', 'Namibia', 'Gabon',
-                    'Lesotho', 'Guinea-Bissau', 'Equatorial Guinea', 'Mauritius', 'Eswatini',
-                    'Djibouti', 'Comoros', 'Cape Verde', 'Sao Tome and Principe', 'Seychelles',
-                    'Congo', 'Democratic Republic of the Congo', "Cote d'Ivoire",
-                    
-                    // Oceania
-                    'Australia', 'New Zealand', 'Papua New Guinea', 'Fiji', 'Solomon Islands',
-                    'Vanuatu', 'Samoa', 'Kiribati', 'Micronesia', 'Tonga', 'Palau', 'Marshall Islands',
-                    'Tuvalu', 'Nauru',
-                    
-                    // Others
-                    'Russia', 'Greenland'
-                );
-                
-                if (in_array($country, $valid_countries)) {
-                    if (!isset($country_counts[$country])) {
-                        $country_counts[$country] = 0;
-                    }
-                    $country_counts[$country]++;
-                }
+        if (empty($item['data']['tags']) || !is_array($item['data']['tags'])) {
+            continue;
+        }
+        foreach ($item['data']['tags'] as $tag) {
+            $raw = is_array($tag) && isset($tag['tag']) ? $tag['tag'] : '';
+            $country = zotero_viz_canonical_country($raw);
+            if ($country === '') {
+                continue;
             }
+            if (!isset($country_counts[$country])) {
+                $country_counts[$country] = 0;
+            }
+            $country_counts[$country]++;
         }
     }
     
@@ -1391,10 +1554,91 @@ function zotero_viz_stats_shortcode($atts) {
 }
 
 // Cache refresh function
+function zotero_viz_collection_display_name($collection) {
+    if (!is_array($collection)) {
+        return '(unnamed)';
+    }
+    $display_name = !empty($collection['display_name']) ? $collection['display_name'] : ($collection['library_name'] ?? '');
+    if ($display_name === '') {
+        return '(unnamed)';
+    }
+    return $display_name;
+}
+
+function zotero_viz_refresh_collection($collection) {
+    $display_name = zotero_viz_collection_display_name($collection);
+    $library_name = isset($collection['library_name']) ? (string) $collection['library_name'] : '';
+    $result = array(
+        'display_name' => $display_name,
+        'library_name' => $library_name,
+        'success' => false,
+        'message' => '',
+        'item_count' => null,
+        'countries' => null,
+        'year_range' => null,
+        'updated' => 'just now',
+        'type' => empty($collection['collection_key']) ? 'Full Library' : 'Collection'
+    );
+
+    if (!zotero_viz_ensure_cache_dir()) {
+        $result['message'] = 'Cache directory is not writable: ' . zotero_viz_cache_dir();
+        return $result;
+    }
+
+    if (empty($collection['group_id']) || $library_name === '') {
+        $result['message'] = 'Skipped: missing Group ID or Library Name';
+        return $result;
+    }
+
+    $collection_key = !empty($collection['collection_key']) ? $collection['collection_key'] : null;
+    $items = zotero_viz_fetch_collection_items($collection['group_id'], $collection_key);
+
+    if (is_wp_error($items)) {
+        $result['message'] = $items->get_error_message();
+        return $result;
+    }
+
+    $map = zotero_viz_process_map_data($items);
+    $timeline = zotero_viz_process_timeline_data($items);
+    $cache_data = array(
+        'map' => $map,
+        'timeline' => $timeline,
+        'updated' => time(),
+        'item_count' => count($items),
+        'collection_key' => $collection_key,
+        'library_name' => $library_name,
+        'display_name' => $display_name,
+        'group_id' => $collection['group_id']
+    );
+
+    $cache_file = zotero_viz_cache_file($display_name);
+    $json = wp_json_encode($cache_data);
+    if ($json === false) {
+        $result['message'] = 'Failed to encode cache JSON';
+        return $result;
+    }
+
+    $written = file_put_contents($cache_file, $json, LOCK_EX);
+    if ($written === false) {
+        $result['message'] = 'Failed to write cache file: ' . $cache_file;
+        return $result;
+    }
+
+    $years = count($timeline);
+    $result['success'] = true;
+    $result['message'] = count($items) . ' items cached';
+    $result['item_count'] = count($items);
+    $result['countries'] = count($map);
+    $result['year_range'] = $years > 0 ? min(array_keys($timeline)) . '-' . max(array_keys($timeline)) : 'N/A';
+    return $result;
+}
+
 function zotero_viz_refresh_all_caches() {
-    $results = array();
     $collections = get_option('zotero_viz_collections', array());
-    
+    if (!is_array($collections) || empty($collections)) {
+        return array();
+    }
+
     if (!zotero_viz_ensure_cache_dir()) {
         return array(
             array(
@@ -1404,73 +1648,11 @@ function zotero_viz_refresh_all_caches() {
             )
         );
     }
-    
+
+    $results = array();
     foreach ($collections as $collection) {
-        $display_name = !empty($collection['display_name']) ? $collection['display_name'] : ($collection['library_name'] ?? '');
-        if ($display_name === '') {
-            $display_name = '(unnamed)';
-        }
-        
-        if (empty($collection['group_id']) || empty($collection['library_name'])) {
-            $results[] = array(
-                'display_name' => $display_name,
-                'success' => false,
-                'message' => 'Skipped: missing Group ID or Library Name'
-            );
-            continue;
-        }
-        
-        $collection_key = !empty($collection['collection_key']) ? $collection['collection_key'] : null;
-        $items = zotero_viz_fetch_collection_items($collection['group_id'], $collection_key);
-        
-        if (is_wp_error($items)) {
-            $results[] = array(
-                'display_name' => $display_name,
-                'success' => false,
-                'message' => $items->get_error_message()
-            );
-            continue;
-        }
-        
-        $cache_data = array(
-            'map' => zotero_viz_process_map_data($items),
-            'timeline' => zotero_viz_process_timeline_data($items),
-            'updated' => time(),
-            'item_count' => count($items),
-            'collection_key' => $collection_key,
-            'library_name' => $collection['library_name'],
-            'display_name' => $display_name,
-            'group_id' => $collection['group_id']
-        );
-        
-        $cache_file = zotero_viz_cache_file($display_name);
-        $json = wp_json_encode($cache_data);
-        if ($json === false) {
-            $results[] = array(
-                'display_name' => $display_name,
-                'success' => false,
-                'message' => 'Failed to encode cache JSON'
-            );
-            continue;
-        }
-        
-        $written = file_put_contents($cache_file, $json, LOCK_EX);
-        if ($written === false) {
-            $results[] = array(
-                'display_name' => $display_name,
-                'success' => false,
-                'message' => 'Failed to write cache file: ' . $cache_file
-            );
-            continue;
-        }
-        
-        $results[] = array(
-            'display_name' => $display_name,
-            'success' => true,
-            'message' => count($items) . ' items cached'
-        );
+        $results[] = zotero_viz_refresh_collection($collection);
     }
-    
     return $results;
 }
 
