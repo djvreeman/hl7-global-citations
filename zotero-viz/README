@@ -11,7 +11,7 @@ A WordPress plugin that creates interactive visualizations from Zotero collectio
 - **Multiple Collection Support**: Handle full libraries and specific collections from the same Zotero group
 - **Admin Interface**: Easy configuration with auto-parsing of Zotero URLs
 - **Built-in Documentation**: README viewer in WordPress admin with Parsedown support
-- **Automatic Caching**: Daily updates with manual refresh option
+- **Automatic Caching**: Daily updates with all-libraries or per-library manual refresh
 - **Customizable Colors**: Configure map and chart colors to match your theme
 - **SVG Tooltips**: Smooth, cursor-following tooltips with citation counts
 - **Authenticated Zotero Access**: Required API key for server-side cache refresh; never exposed on public pages
@@ -120,7 +120,8 @@ Customize visualization colors:
 ### Cache Management
 
 - Click **Save Settings** to save your configuration (including API key)
-- Click **Refresh Cache Now** to fetch/update data (requires a configured API key)
+- Click **Refresh Cache Now** to fetch/update all libraries (requires a configured API key). A progress bar lists each library as it refreshes.
+- On the **Cache Status** tab, click **Refresh** on an individual row to update only that library
 - View cache status showing items cached, countries tagged, years covered, and last update time
 
 ## Usage
@@ -319,10 +320,12 @@ Our research spans multiple continents and represents decades of collaborative w
 
 ### Country Tagging in Zotero
 
-For maps to work correctly, tag Zotero items with **World Bank country names**:
+For maps to work correctly, tag Zotero items with country names. The plugin canonicalizes aliases (including World Bank economy titles and ISO codes) via `assets/country-mappings.json` when the cache is built, so these all count as the same country:
 
-- ✅ **Correct**: `United States`, `United Kingdom`, `South Korea`, `Bangladesh`
-- ❌ **Incorrect**: `USA`, `UK`, `Korea`, `Bengal`
+- ✅ `United States`, `USA`, `United States of America`
+- ✅ `Turkey`, `Turkiye`, `Türkiye`
+- ✅ `Egypt`, `Egypt, Arab Rep.`
+- ❌ Still ignored: non-country tags such as `Korea`, `Bengal`, or project keywords
 
 **Supported Countries**: All 195+ World Bank countries including UN member states, observer states, and common territories.
 
@@ -357,7 +360,7 @@ The plugin includes a built-in documentation viewer accessible from the WordPres
 
 - **Location**: `wp-content/cache/zotero-viz/`
 - **Format**: JSON files named by display name (e.g., `hl_standards_full.json`)
-- **Refresh**: Automatic daily refresh + manual refresh option
+- **Refresh**: Automatic daily refresh, manual all-libraries refresh, or per-library refresh on Cache Status
 - **Data Stored**: Citation counts, country mappings, timeline data, metadata
 
 ### API Integration
@@ -406,9 +409,9 @@ The plugin includes a built-in documentation viewer accessible from the WordPres
 - Verify the cache file exists at `wp-content/cache/zotero-viz/{display_name}.json`
 
 **Countries Not Appearing on Map:**
-- Confirm country tags use World Bank naming conventions
-- Verify tags are properly applied to Zotero items (not just in titles/abstracts)
-- Check the valid countries list in PHP code
+- Confirm tags are country names or known aliases (World Bank titles, ISO codes); see `assets/country-mappings.json`
+- Verify tags are applied to Zotero items (not only in titles/abstracts)
+- Refresh the cache after changing tags or mappings
 
 **Timeline Shows No Data:**
 - Ensure Zotero items have date fields populated
